@@ -18,7 +18,7 @@
 ## 설치
 
 ```bash
-git clone https://github.com/moveju112/rule-architect.git ~/.claude/skills/rule-architect
+git clone https://github.com/moveju112/rule_architect.git ~/.claude/skills/rule-architect
 ```
 
 ## 사용
