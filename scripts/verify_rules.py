@@ -11,6 +11,7 @@
    - 생성된 docs/UPPERCASE.md가 전부 CLAUDE.md에서 링크됨
 4. placeholder 잔존 스캔 (TBD, TODO, FIXME, XXX, <placeholder>)
 5. docs 링크 대상이 UPPERCASE 네이밍인지
+6. AGENTS.md 포인터 존재 + CLAUDE.md 참조 (내용 복제 아님)
 
 종료 코드: 0 = 통과, 1 = 실패 (사유는 stderr)
 """
@@ -81,6 +82,18 @@ def main():
         for doc in sorted(docsDir.glob('*.md')):
             if doc.stem == doc.stem.upper() and f'docs/{doc.name}' not in linked:
                 errors.append(f'generated doc not linked in CLAUDE.md: docs/{doc.name}')
+
+    # 5. AGENTS.md 포인터 검사 — 존재 + CLAUDE.md 참조 + 내용 복제 아님
+    agentsMd = root / 'AGENTS.md'
+    if not agentsMd.is_file():
+        errors.append('AGENTS.md pointer not found')
+    else:
+        agentsText = agentsMd.read_text(encoding='utf-8')
+        if 'CLAUDE.md' not in agentsText:
+            errors.append('AGENTS.md does not reference CLAUDE.md')
+        # 포인터는 짧아야 함 — 룰 본문을 복제하면 드리프트
+        if agentsMd.read_text(encoding='utf-8').count('\n') + 1 > 15:
+            errors.append('AGENTS.md too long — should be a pointer, not a rule copy')
 
     # 결과 출력
     for w in warnings:

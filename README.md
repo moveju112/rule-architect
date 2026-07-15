@@ -5,6 +5,7 @@
 ## 산출물
 
 - **CLAUDE.md** (≤60줄) — 항상 로드되는 슬림 인덱스. Core Rules + 실행 명령 + Quick Reference 표
+- **AGENTS.md** — Codex CLI 등 비-Claude 에이전트용 포인터. CLAUDE.md를 가리키기만 함 (내용 복제 안 함 = 드리프트 방지)
 - **docs/*.md** (각 ≤150줄) — 주제별 룰 문서. 필요할 때만 로드됨
   - 항상: `ARCHITECTURE.md`, `CODING_RULES.md`, `PITFALLS.md`
   - 조건부: `CONTROLLER_RULES.md`, `ENUM_CODES.md`, `RESPONSE_KEYS.md`, `DB_RULES.md`, `DEPLOY.md`
