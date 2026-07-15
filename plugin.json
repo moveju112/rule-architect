@@ -1,0 +1,24 @@
+{
+  "name": "rule-architect",
+  "version": "0.1.0",
+  "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + on-demand docs/*.md rule files, with link/budget verification and a quiz test.",
+  "author": {
+    "name": "moveju112",
+    "email": "move@wemadeconnect.com"
+  },
+  "homepage": "https://github.com/moveju112/rule-architect",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moveju112/rule-architect.git"
+  },
+  "keywords": [
+    "skill",
+    "claude-code",
+    "rules",
+    "CLAUDE.md",
+    "project-setup",
+    "documentation",
+    "token-efficiency"
+  ],
+  "license": "MIT"
+}
