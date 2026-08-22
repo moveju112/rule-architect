@@ -79,6 +79,16 @@ marker stay as-is in every language.
 ## Install
 
 ```bash
+npx skills add moveju112/rule-architect -g
+```
+
+Works with Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and the other
+agents the [Skills CLI](https://skills.sh) supports. Drop `-g` to install into the
+current project instead of user-level.
+
+By hand:
+
+```bash
 git clone https://github.com/moveju112/rule-architect.git ~/.claude/skills/rule-architect
 
 # optional — register the slash command
