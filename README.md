@@ -86,6 +86,20 @@ Works with Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and the other
 agents the [Skills CLI](https://skills.sh) supports. Drop `-g` to install into the
 current project instead of user-level.
 
+As a Claude Code plugin instead:
+
+```bash
+claude plugin marketplace add moveju112/rule-architect
+claude plugin install rule-architect@rule-architect
+```
+
+Or from inside a Claude Code session:
+
+```
+/plugin marketplace add moveju112/rule-architect
+/plugin install rule-architect@rule-architect
+```
+
 By hand:
 
 ```bash
