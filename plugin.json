@@ -4,7 +4,7 @@
   "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md rule files, with link/budget verification and a quiz test.",
   "author": {
     "name": "moveju112",
-    "email": "move@wemadeconnect.com"
+    "email": "moveju112@users.noreply.github.com"
   },
   "homepage": "https://github.com/moveju112/rule-architect",
   "repository": {
