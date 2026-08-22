@@ -1,8 +1,8 @@
 {
   "name": "rule-architect",
   "displayName": "rule-architect — project AI rule set generator",
-  "version": "0.2.0",
-  "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md rule files, with link/budget verification and a quiz test. English and Korean triggers both work.",
+  "version": "0.3.0",
+  "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md rule files, enforced by a strict contract checker, a deterministic signal scan, an update-safety manifest, and an archived quiz gate. English and Korean triggers both work.",
   "author": {
     "name": "moveju112",
     "email": "moveju112@users.noreply.github.com"

@@ -138,19 +138,61 @@ Natural language, either language:
 
 Two gates, and the rule set is not done until both pass.
 
-- **`scripts/verify_rules.py <project-root>`** — bidirectional link integrity, line
-  budgets, placeholder scan, and **citation freshness**: every backticked
-  `path/file.ext:42` a rule cites must exist. A dead citation fails the run, which
-  is how stale rules are caught. Exit 0 = pass.
-- **Quiz test** — a fresh subagent answers 5 questions given ONLY the generated
-  rules, with no source access. Fixed mix:
-  - **3 recall** — "Where does a new model have to be registered?"
-  - **1 judgment** — "I want to do X; is approach Y allowed?" (measures application, not recall)
-  - **1 negative** — something the rules do not cover. It passes only if the agent
-    says "not in the rules, check the source" instead of inventing an answer.
-  - Pass = ≥4 correct **AND** the negative question passed.
+**`scripts/verify_rules.py <project-root>`** — the form gate. **Strict by default:
+exceeding a target budget fails rather than warns.** `--lenient` demotes target
+overruns to warnings; hard limits fail either way. It checks:
 
-The script checks form; the quiz is the only content-quality gate.
+- bidirectional link integrity, and that `ARCHITECTURE.md`, `CODING_RULES.md`,
+  and `PITFALLS.md` exist and are linked
+- line budgets: CLAUDE.md ≤60 (hard 80), docs ≤150 (hard 190), playbooks ≤80 (hard 100)
+- Core Rules ≤10 bullets, and routing rows whose trigger is neither empty nor a
+  restatement of the file name
+- every graded rule carries a `why:` line and a ✅ example
+- placeholder scan, UPPERCASE naming
+- **citation freshness** — a cited `src/db.py:42` fails both when the file is gone
+  **and** when the file is shorter than 42 lines, which is how a rule that quietly
+  survived a refactor gets caught. `Dockerfile`, `Makefile`, and dotfiles count as
+  citations; bare naming patterns like `UPPERCASE.md` do not.
+
+**Quiz test** — the content gate. A fresh subagent answers 5 questions given ONLY
+the generated rules, with no source access:
+
+- **3 recall** — "Where does a new model have to be registered?"
+- **1 judgment** — "I want to do X; is approach Y allowed?" (measures application, not recall)
+- **1 negative** — something the rules do not cover. It passes only if the agent
+  says "not in the rules, check the source" instead of inventing an answer.
+- Pass = ≥4 correct **AND** the negative question passed.
+
+`scripts/quiz.py` builds the isolation prompt and grades the run, archiving it to
+`.rule-architect/quiz/<run-id>.json`. It deliberately does not execute a model —
+the skill dispatches the isolated subagent, and a quiz "pass" with no archived run
+does not count.
+
+## Update safety
+
+`scripts/manifest.py` records a SHA-256 per generated file. Before an update run,
+`manifest.py check` compares the working tree against those hashes:
+
+| Exit | Meaning | Policy |
+|---|---|---|
+| 0 | generated files unchanged | safe to regenerate |
+| 1 | a file was hand-edited, or is missing | **conflict — never overwrite**, report and ask |
+| 2 | no manifest (legacy project) | treat every rule file as hand-written; add only |
+
+This is what replaces "commit your CLAUDE.md first and hope". The old single marker
+at the bottom of CLAUDE.md could not tell a hand-written rule from a stale generated
+one; a per-file hash can, and the policy on ambiguity is to stop rather than guess.
+
+## Reproducibility
+
+`scripts/scan.py <root>` prints a JSON manifest of the measured signals — stack,
+layer directories, enum-defining files, deploy artifacts, git co-change groups —
+and the conditional-doc `decisions` derived from them, each with its evidence.
+Same commit in, same manifest out.
+
+Every traversal is bounded (`--max-files`, `--max-bytes`, `--max-commits`), vendor
+and build directories are skipped, and hitting a cap sets a `truncated` flag, so a
+partial scan can never be mistaken for a complete one.
 
 ## Hook promotion
 
@@ -164,10 +206,26 @@ explicitly ask. Fewer prose rules means better always-loaded context.
 If the [md-en-kr](https://github.com/moveju112/md-en-kr) skill is installed, the run
 offers English compression at the end. It is an offer, never automatic.
 
+## Development
+
+```bash
+python3 tests/test_rules.py   # clones the fixture per case, breaks one contract, asserts the failure
+```
+
+Layout:
+
+```
+scripts/     scan.py, manifest.py, verify_rules.py, quiz.py
+tests/       test_rules.py + fixtures/good/ (a rule set that passes strict)
+docs/adr/    decisions and their consequences
+archive/     dated records from earlier builds — not the current contract
+```
+
 ## Repository notes
 
-`docs/design.md` and `docs/test-log.md` are dated internal records from the original
-build and are kept in Korean as written.
+`archive/` holds dated internal records from the original build, kept in Korean as
+written. They are not the current contract and are known to have drifted from it;
+`archive/README.md` names the drift.
 
 ## License
 

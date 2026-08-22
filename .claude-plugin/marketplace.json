@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "rule-architect",
-  "description": "프로젝트 AI 룰 세트 생성 스킬 — slim CLAUDE.md 인덱스 + AGENTS.md 포인터 + on-demand docs/*.md",
+  "description": "Project AI rule-set generator — slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md",
   "owner": {
     "name": "moveju112"
   },
   "plugins": [
     {
       "name": "rule-architect",
-      "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md rule files, with link/budget verification and a quiz test.",
+      "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md rule files, enforced by a strict contract checker, a deterministic signal scan, an update-safety manifest, and an archived quiz gate. English and Korean triggers both work.",
       "source": "./"
     }
   ]
