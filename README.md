@@ -1,5 +1,12 @@
 # rule-architect
 
+[![Release](https://img.shields.io/github/v/release/moveju112/rule-architect?color=blue)](https://github.com/moveju112/rule-architect/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+```bash
+npx skills add moveju112/rule-architect -g
+```
+
 A Claude Code skill that generates a production-grade AI rule set for a project:
 one slim `CLAUDE.md` index, an `AGENTS.md` pointer, and on-demand `docs/*.md`
 rule files — all verified by a script and a quiz test before it calls itself done.
