@@ -285,6 +285,22 @@ def quizCases():
         check('quiz rejects the wrong question mix',
               code == 1 and 'composition' in out, out[:160])
 
+        missing = results('t7', [True] * 5)
+        del missing['runId']
+        path.write_text(json.dumps(missing), encoding='utf-8')
+        code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't7', '--results', path)
+        check('quiz rejects results with no runId',
+              code == 1 and 'does not match' in out
+              and not fixture.path('.rule-architect/quiz/t7.json').exists(), out[:160])
+
+        noLang = results('t8', [True] * 5)
+        del noLang['lang']
+        path.write_text(json.dumps(noLang), encoding='utf-8')
+        code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't8', '--results', path)
+        check('quiz rejects results with no lang',
+              code == 1 and 'lang must be' in out
+              and not fixture.path('.rule-architect/quiz/t8.json').exists(), out[:160])
+
         blank = results('t5', [True] * 5)
         blank['questions'][0]['expected'] = ''
         path.write_text(json.dumps(blank), encoding='utf-8')

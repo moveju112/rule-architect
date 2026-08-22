@@ -174,8 +174,8 @@ Before recording a fact, ask: **"would one `ls`, one file read, or one grep reve
      in the rules, check the source" instead of inventing one.
    - Fill `expected` and `correct` per question, then
      `python3 scripts/quiz.py grade <root> --run-id <id> --results <file>`. It enforces the mix and
-     the pass rule (≥4/5 correct AND the negative passed), rejects a results file whose `runId`
-     belongs to another run or whose questions have no `expected` answer, and archives the run under
+     the pass rule (≥4/5 correct AND the negative passed), rejects a results file that omits `runId`
+     or `lang`, names another run, or has questions with no `expected` answer, and archives the run under
      `.rule-architect/quiz/<id>.json`. Use a fresh id per attempt — it refuses to overwrite a
      recorded run rather than quietly replacing the evidence.
    - A failed question names a missing rule: add it, re-verify. The rule set is not done until both

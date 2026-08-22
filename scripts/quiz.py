@@ -111,10 +111,12 @@ def commandGrade(root, runId, resultsPath):
         return 1
 
     problems = []
-    # the results file must be about the run being graded, not another one
-    if results.get('runId') not in (None, runId):
+    # the results file must be about the run being graded, not another one — and a
+    # missing field is not a pass: an unlabelled file could be archived as evidence
+    # for any run at all
+    if results.get('runId') != runId:
         problems.append(f'results.runId {results.get("runId")!r} does not match --run-id {runId!r}')
-    if results.get('lang') not in (None, 'ko', 'en'):
+    if results.get('lang') not in ('ko', 'en'):
         problems.append(f'results.lang must be ko or en, got {results.get("lang")!r}')
 
     counts = dict.fromkeys(REQUIRED_MIX, 0)
@@ -156,12 +158,16 @@ def commandGrade(root, runId, resultsPath):
     record.update({'runId': runId, 'correct': correct, 'total': len(questions),
                    'negativePassed': negativePassed, 'passed': passed})
     archive = root / QUIZ_DIR / f'{runId}.json'
-    if archive.exists():
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    # create exclusively: checking then writing lets two concurrent runs both pass
+    # the check and one silently replace the other's audit record
+    try:
+        with archive.open('x', encoding='utf-8') as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+    except FileExistsError:
         print(f'FAIL: {(QUIZ_DIR / f"{runId}.json").as_posix()} already exists — '
               f'pick a new --run-id instead of overwriting a recorded run', file=sys.stderr)
         return 1
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    archive.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
     summary = (f'{correct}/{len(questions)} correct, negative '
                f'{"passed" if negativePassed else "FAILED"} '
