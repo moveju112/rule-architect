@@ -124,6 +124,25 @@ def verifyCases():
          lambda f: f.path('Dockerfile').unlink(),
          needle='Dockerfile')
 
+    def citeMakefile(fixture):
+        fixture.append('docs/ARCHITECTURE.md', '\nBuild entry point: `Makefile`.\n')
+
+    case('bare Makefile citation is checked and fails when absent',
+         citeMakefile, needle='Makefile')
+
+    def citeDotfile(fixture):
+        fixture.append('docs/ARCHITECTURE.md', '\nConfig template: `.env.example`.\n')
+
+    case('dotfile citation is checked and fails when absent',
+         citeDotfile, needle='.env.example')
+
+    def citeExistingDotfile(fixture):
+        fixture.path('.env.example').write_text('DSN=\n', encoding='utf-8')
+        citeDotfile(fixture)
+
+    case('dotfile citation passes when the file exists',
+         citeExistingDotfile, expectFail=False)
+
     case('stale directory citation fails',
          lambda f: shutil.rmtree(f.path('scripts')),
          needle='directory not found')
@@ -198,6 +217,19 @@ def manifestCases():
         check('hand edit is reported as a conflict, not overwritten',
               code == 1 and 'modified' in out and 'CLAUDE.md' in out, out[:160])
 
+        # recording a second file must not erase the first one's hash
+        code, out = run(MANIFEST, 'record', fixture.root, 'AGENTS.md')
+        payload = json.loads(fixture.path('.rule-architect/manifest.json').read_text(encoding='utf-8'))
+        check('partial record merges instead of wiping earlier hashes',
+              code == 0 and set(payload['files']) == {
+                  'CLAUDE.md', 'docs/CODING_RULES.md', 'AGENTS.md'}, out[:160])
+
+        code, out = run(MANIFEST, 'record', fixture.root, 'AGENTS.md', '--replace')
+        payload = json.loads(fixture.path('.rule-architect/manifest.json').read_text(encoding='utf-8'))
+        check('--replace records only the listed files',
+              code == 0 and set(payload['files']) == {'AGENTS.md'}, out[:160])
+        run(MANIFEST, 'record', fixture.root, 'CLAUDE.md', 'docs/CODING_RULES.md')
+
         fixture.path('docs/CODING_RULES.md').unlink()
         code, out = run(MANIFEST, 'check', fixture.root, '--json')
         payload = json.loads(out)
@@ -220,27 +252,51 @@ def quizCases():
         check('quiz scaffold states the required mix',
               payload['requiredMix'] == {'recall': 3, 'judgment': 1, 'negative': 1}, out[:160])
 
-        def results(correctFlags, types=('recall', 'recall', 'recall', 'judgment', 'negative')):
-            return {'runId': 't1', 'lang': 'en', 'questions': [
+        def results(runId, correctFlags,
+                    types=('recall', 'recall', 'recall', 'judgment', 'negative')):
+            return {'runId': runId, 'lang': 'en', 'questions': [
                 {'id': f'q{i}', 'type': kind, 'question': 'q', 'expected': 'e',
                  'answer': 'a', 'correct': flag}
                 for i, (kind, flag) in enumerate(zip(types, correctFlags))]}
 
         path = fixture.path('results.json')
-        path.write_text(json.dumps(results([True] * 5)), encoding='utf-8')
+        path.write_text(json.dumps(results('t1', [True] * 5)), encoding='utf-8')
         code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't1', '--results', path)
         check('quiz grade passes a clean run and archives it',
               code == 0 and fixture.path('.rule-architect/quiz/t1.json').is_file(), out[:160])
 
-        path.write_text(json.dumps(results([True, True, True, True, False])), encoding='utf-8')
+        code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't1', '--results', path)
+        check('quiz refuses to overwrite an archived run',
+              code == 1 and 'already exists' in out, out[:160])
+
+        path.write_text(json.dumps(results('t2', [True, True, True, True, False])), encoding='utf-8')
         code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't2', '--results', path)
         check('quiz fails when the negative question fails despite 4 correct',
               code == 1 and 'negative FAILED' in out, out[:160])
 
-        path.write_text(json.dumps(results([True] * 5, ('recall',) * 4 + ('negative',))), encoding='utf-8')
+        path.write_text(json.dumps(results('t1', [True] * 5)), encoding='utf-8')
+        code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't9', '--results', path)
+        check('quiz rejects results recorded for a different run',
+              code == 1 and 'does not match' in out, out[:160])
+
+        path.write_text(json.dumps(results('t3', [True] * 5, ('recall',) * 4 + ('negative',))),
+                        encoding='utf-8')
         code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't3', '--results', path)
         check('quiz rejects the wrong question mix',
               code == 1 and 'composition' in out, out[:160])
+
+        blank = results('t5', [True] * 5)
+        blank['questions'][0]['expected'] = ''
+        path.write_text(json.dumps(blank), encoding='utf-8')
+        code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't5', '--results', path)
+        check('quiz rejects a question with no expected answer',
+              code == 1 and 'expected' in out, out[:160])
+
+        path.write_text(json.dumps(results('t6', [True] * 5)), encoding='utf-8')
+        code, out = run(QUIZ, 'grade', fixture.root, '--run-id', '../escape', '--results', path)
+        check('quiz rejects a run id that could escape the archive directory',
+              code == 1 and 'invalid --run-id' in out
+              and not (fixture.root.parent / 'escape.json').exists(), out[:160])
 
         path.write_text(json.dumps({'questions': 'nope'}), encoding='utf-8')
         code, out = run(QUIZ, 'grade', fixture.root, '--run-id', 't4', '--results', path)
@@ -273,6 +329,28 @@ def scanCases():
               payload['truncated']['files'] is True, out[:160])
     finally:
         fixture.cleanup()
+
+    # a project nested in a bigger repo must not inherit the parent's history
+    nested = Fixture()
+    try:
+        repo = nested.root.parent
+        git = ['git', '-C', str(repo)]
+        subprocess.run(git + ['init', '-q'], capture_output=True, timeout=60)
+        subprocess.run(git + ['config', 'user.email', 't@example.com'], capture_output=True, timeout=60)
+        subprocess.run(git + ['config', 'user.name', 'test'], capture_output=True, timeout=60)
+        for round_ in range(4):
+            (repo / 'OUTSIDE_A.md').write_text(f'a{round_}\n', encoding='utf-8')
+            (repo / 'OUTSIDE_B.md').write_text(f'b{round_}\n', encoding='utf-8')
+            subprocess.run(git + ['add', '-A'], capture_output=True, timeout=60)
+            subprocess.run(git + ['commit', '-q', '-m', f'r{round_}'], capture_output=True, timeout=60)
+        code, out = run(SCAN, nested.root)
+        payload = json.loads(out)
+        groups = payload['coChange']['groups']
+        check('co-change ignores commits outside the project directory',
+              code == 0 and not any('OUTSIDE' in f for g in groups for f in g['files']),
+              json.dumps(groups)[:160])
+    finally:
+        nested.cleanup()
 
 
 def main():

@@ -157,19 +157,33 @@ def detectDeploy(files, root, limit=40):
     return sorted(set(hits))
 
 
-# File sets that keep changing together — the signal for a task playbook
-def detectCoChange(root, maxCommits, minTimes=3, maxPerCommit=12, limit=10):
-    command = ['git', '-C', str(root), 'log', f'-n{maxCommits}',
-               '--name-only', '--no-merges', '--pretty=format:%H']
+# Run a git command inside root; None when git is unusable there
+def runGit(root, *args):
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['git', '-C', str(root), *args],
+                                capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
-        return {'available': False, 'groups': [], 'truncated': False}
-    if result.returncode != 0:
-        return {'available': False, 'groups': [], 'truncated': False}
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+# File sets that keep changing together — the signal for a task playbook.
+# History is scoped to the project directory, not the enclosing repository: a
+# project nested inside a bigger repo would otherwise inherit that repo's commits
+# and switch on a task playbook for files it does not contain.
+def detectCoChange(root, maxCommits, minTimes=3, maxPerCommit=12, limit=10):
+    unavailable = {'available': False, 'groups': [], 'truncated': False}
+    prefix = runGit(root, 'rev-parse', '--show-prefix')
+    if prefix is None:
+        return unavailable
+    prefix = prefix.strip()
+    log = runGit(root, 'log', f'-n{maxCommits}', '--name-only', '--no-merges',
+                 '--pretty=format:%H', '--', '.')
+    if log is None:
+        return unavailable
 
     commits, current = [], []
-    for line in result.stdout.splitlines():
+    for line in log.splitlines():
         if not line.strip():
             continue
         if re.fullmatch(r'[0-9a-f]{40}', line.strip()):
@@ -177,7 +191,13 @@ def detectCoChange(root, maxCommits, minTimes=3, maxPerCommit=12, limit=10):
                 commits.append(current)
             current = []
             continue
-        current.append(line.strip())
+        path = line.strip()
+        # git prints paths from the repository root; keep only this project's own
+        if prefix:
+            if not path.startswith(prefix):
+                continue
+            path = path[len(prefix):]
+        current.append(path)
     if current:
         commits.append(current)
 

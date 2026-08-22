@@ -170,8 +170,9 @@ does not count.
 
 ## Update safety
 
-`scripts/manifest.py` records a SHA-256 per generated file. Before an update run,
-`manifest.py check` compares the working tree against those hashes:
+`scripts/manifest.py` records a SHA-256 per generated file, merging into whatever
+the manifest already holds (`--replace` records a complete set instead). Before an
+update run, `manifest.py check` compares the working tree against those hashes:
 
 | Exit | Meaning | Policy |
 |---|---|---|
@@ -188,7 +189,9 @@ one; a per-file hash can, and the policy on ambiguity is to stop rather than gue
 `scripts/scan.py <root>` prints a JSON manifest of the measured signals — stack,
 layer directories, enum-defining files, deploy artifacts, git co-change groups —
 and the conditional-doc `decisions` derived from them, each with its evidence.
-Same commit in, same manifest out.
+Same commit in, same manifest out. Git history is scoped to the project directory,
+so a project nested inside a larger repository does not inherit that repository's
+commits.
 
 Every traversal is bounded (`--max-files`, `--max-bytes`, `--max-commits`), vendor
 and build directories are skipped, and hitting a cap sets a `truncated` flag, so a

@@ -5,8 +5,9 @@ Usage:
   python3 manifest.py record <project-root> <file> [<file> ...]
   python3 manifest.py check  <project-root> [--json]
 
-`record` stores a hash of every file the generator wrote. `check` compares the
-current files against those hashes before an update run.
+`record` stores a hash of every file the generator wrote, merging into whatever the
+manifest already holds; pass `--replace` to record a complete set and drop the rest.
+`check` compares the current files against those hashes before an update run.
 
 Why a hash and not a marker: a single marker at the bottom of CLAUDE.md cannot
 tell a hand-edited rule apart from a stale generated one, so an update either
@@ -56,9 +57,13 @@ def loadManifest(root):
     return data if isinstance(data.get('files'), dict) else None
 
 
-# Record the hash of every file this run generated
-def commandRecord(root, targets):
-    files = {}
+# Record the hash of every file this run generated.
+# Merges into any existing manifest by default: an update run that rewrites two of
+# six files must not erase the hashes of the other four, or the next check would
+# read them as untracked and a later record would bury a hand edit silently.
+def commandRecord(root, targets, replace=False):
+    existing = loadManifest(root)
+    files = {} if replace or existing is None else dict(existing['files'])
     for raw in targets:
         path = Path(raw)
         resolved = path if path.is_absolute() else root / path
@@ -73,7 +78,8 @@ def commandRecord(root, targets):
     target.write_text(json.dumps(
         {'schema': SCHEMA, 'files': dict(sorted(files.items()))},
         ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    print(f'RECORDED: {len(files)} files -> {MANIFEST_REL.as_posix()}')
+    print(f'RECORDED: {len(targets)} files, {len(files)} tracked '
+          f'-> {MANIFEST_REL.as_posix()}')
     return 0
 
 
@@ -136,6 +142,9 @@ def main():
     recordParser = sub.add_parser('record')
     recordParser.add_argument('root')
     recordParser.add_argument('files', nargs='+')
+    recordParser.add_argument('--replace', action='store_true',
+                              help='drop entries not listed instead of merging '
+                                   '(use when recording the complete generated set)')
 
     checkParser = sub.add_parser('check')
     checkParser.add_argument('root')
@@ -147,7 +156,7 @@ def main():
         print(f'FAIL: {root} is not a directory', file=sys.stderr)
         return 1
     if args.command == 'record':
-        return commandRecord(root, args.files)
+        return commandRecord(root, args.files, args.replace)
     return commandCheck(root, args.json)
 
 

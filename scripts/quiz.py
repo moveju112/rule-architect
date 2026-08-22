@@ -21,8 +21,13 @@ Exit codes: 0 = pass, 1 = fail or malformed results.
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+
+# A run id becomes a file name, so keep it to characters that cannot escape the
+# archive directory
+RUN_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 
 QUIZ_DIR = Path('.rule-architect') / 'quiz'
 REQUIRED_MIX = {'recall': 3, 'judgment': 1, 'negative': 1}
@@ -106,17 +111,34 @@ def commandGrade(root, runId, resultsPath):
         return 1
 
     problems = []
+    # the results file must be about the run being graded, not another one
+    if results.get('runId') not in (None, runId):
+        problems.append(f'results.runId {results.get("runId")!r} does not match --run-id {runId!r}')
+    if results.get('lang') not in (None, 'ko', 'en'):
+        problems.append(f'results.lang must be ko or en, got {results.get("lang")!r}')
+
     counts = dict.fromkeys(REQUIRED_MIX, 0)
+    seenIds = set()
     for index, item in enumerate(questions):
+        if not isinstance(item, dict):
+            problems.append(f'question {index}: must be an object')
+            continue
         kind = item.get('type')
         if kind not in counts:
             problems.append(f'question {index}: unknown type {kind!r}')
             continue
         counts[kind] += 1
+        # `correct` is a human judgement; the rest is the evidence for it, so an
+        # unjudgeable record must not be able to archive itself as a pass
+        for field in ('id', 'question', 'expected', 'answer'):
+            if not str(item.get(field, '')).strip():
+                problems.append(f'question {index}: empty `{field}`')
         if not isinstance(item.get('correct'), bool):
             problems.append(f'question {index}: `correct` must be a boolean')
-        if not str(item.get('answer', '')).strip():
-            problems.append(f'question {index}: empty answer')
+        identifier = str(item.get('id', ''))
+        if identifier and identifier in seenIds:
+            problems.append(f'question {index}: duplicate id {identifier!r}')
+        seenIds.add(identifier)
     for kind, wanted in REQUIRED_MIX.items():
         if counts[kind] != wanted:
             problems.append(f'composition: {kind} = {counts[kind]}, required {wanted}')
@@ -134,6 +156,10 @@ def commandGrade(root, runId, resultsPath):
     record.update({'runId': runId, 'correct': correct, 'total': len(questions),
                    'negativePassed': negativePassed, 'passed': passed})
     archive = root / QUIZ_DIR / f'{runId}.json'
+    if archive.exists():
+        print(f'FAIL: {(QUIZ_DIR / f"{runId}.json").as_posix()} already exists — '
+              f'pick a new --run-id instead of overwriting a recorded run', file=sys.stderr)
+        return 1
     archive.parent.mkdir(parents=True, exist_ok=True)
     archive.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
@@ -165,6 +191,10 @@ def main():
     root = Path(args.root).resolve()
     if not root.is_dir():
         print(f'FAIL: {root} is not a directory', file=sys.stderr)
+        return 1
+    if not RUN_ID_RE.match(args.run_id):
+        print(f'FAIL: invalid --run-id {args.run_id!r} — use letters, digits, dot, '
+              f'dash, or underscore (max 64)', file=sys.stderr)
         return 1
     if args.command == 'scaffold':
         return commandScaffold(root, args.lang, args.run_id)

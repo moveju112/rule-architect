@@ -112,8 +112,9 @@ All four are stdlib-only Python and live in `scripts/`. Under a plugin install, 
    Format and §Non-Derivable Filter.
 4. **Write CLAUDE.md** — after docs exist, so every link is real. Then write the `AGENTS.md` pointer.
 5. **Record** — `python3 scripts/manifest.py record <root> CLAUDE.md AGENTS.md docs/...` for every
-   file this run wrote. Skipping this makes the next update run unable to tell your output from a
-   human's edits.
+   file this run wrote. It merges into the existing manifest, so recording two files on an update
+   run does not erase the other four; pass `--replace` only when the list IS the complete generated
+   set. Skipping this step makes the next update run unable to tell your output from a human's edits.
 6. **Verify** — run the script gate, then the quiz gate (§Verify). Fix and re-run until both pass.
 
 ## Rule Format
@@ -173,8 +174,10 @@ Before recording a fact, ask: **"would one `ls`, one file read, or one grep reve
      in the rules, check the source" instead of inventing one.
    - Fill `expected` and `correct` per question, then
      `python3 scripts/quiz.py grade <root> --run-id <id> --results <file>`. It enforces the mix and
-     the pass rule (≥4/5 correct AND the negative passed) and archives the run under
-     `.rule-architect/quiz/<id>.json`.
+     the pass rule (≥4/5 correct AND the negative passed), rejects a results file whose `runId`
+     belongs to another run or whose questions have no `expected` answer, and archives the run under
+     `.rule-architect/quiz/<id>.json`. Use a fresh id per attempt — it refuses to overwrite a
+     recorded run rather than quietly replacing the evidence.
    - A failed question names a missing rule: add it, re-verify. The rule set is not done until both
      gates pass, and "the quiz passed" without an archived run is not a pass.
 
