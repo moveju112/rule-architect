@@ -8,10 +8,7 @@
     "email": "moveju112@users.noreply.github.com"
   },
   "homepage": "https://github.com/moveju112/rule-architect",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/moveju112/rule-architect.git"
-  },
+  "repository": "https://github.com/moveju112/rule-architect.git",
   "keywords": [
     "skill",
     "claude-code",
