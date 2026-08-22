@@ -1,102 +1,143 @@
 # rule-architect
 
-프로젝트에 고도화된 AI 룰 세트를 자동 생성하는 Claude Code 스킬.
+A Claude Code skill that generates a production-grade AI rule set for a project:
+one slim `CLAUDE.md` index, an `AGENTS.md` pointer, and on-demand `docs/*.md`
+rule files — all verified by a script and a quiz test before it calls itself done.
+
+Works in **English and Korean**. Triggers are registered in both languages, and
+the generated rules follow the project's existing docs language (or yours, if the
+project has none).
 
 ---
 
-# ⚠️ 필수: 모델 요구사항
+# ⚠️ Required: model tier
 
-> **이 스킬은 판단력에 의존한다. 약한 모델로 돌리면 룰이 망가진다.**
-> 특히 `--update`는 "변경된 섹션만 diff 수정" 지시를 지켜야 하는데,
-> 약한 모델은 전체 파일을 재생성해서 **손으로 추가한 룰을 날려버린다.**
+> **This skill runs on judgment. A weak model produces a broken rule set.**
+> `--update` in particular must honor "diff-edit only the changed sections".
+> A weak model regenerates whole files instead and **destroys hand-written rules.**
 
-| 도구 | 최소 | 권장 | 금지 |
+| Tool | Minimum | Recommended | Do not use |
 |---|---|---|---|
-| **Claude Code** | Sonnet 5 (신규 생성만) | **Opus 5 / Fable 5 + effort `high`** | Haiku 계열 |
-| **Codex CLI / GPT** | GPT-5 계열 flagship | **GPT-5 Codex + reasoning `high`** | `mini` · `nano` 계열 |
+| **Claude Code** | Sonnet 5 (fresh generation only) | **Opus 5 / Fable 5 + effort `high`** | Haiku tier |
+| **Codex CLI / GPT** | GPT-5 flagship tier | **GPT-5 Codex + reasoning `high`** | `mini` · `nano` tiers |
 
-**`--update` 실행 시에는 최소 등급으로 돌리지 마라.**
-Claude는 Opus 5 / Fable 5, GPT는 flagship 등급을 써라.
-그리고 실행 전에 **기존 CLAUDE.md를 커밋해 둬라.** 사고 나도 되돌린다.
+**Never run `--update` at the minimum tier.** Use Opus 5 / Fable 5 on Claude, or a
+flagship tier on GPT. And **commit your existing CLAUDE.md first** — that way a bad
+run is one `git checkout` away from undone.
 
-모델과 무관한 부분: `scripts/verify_rules.py`.
-줄 수·링크·인용 실존 검사는 결정적이라 모델 영향을 받지 않는다.
+Model-independent: `scripts/verify_rules.py`. Line budgets, link integrity, and
+citation-freshness checks are deterministic, so the model tier does not affect them.
 
 ---
 
-## 산출물
+## What it generates
 
-- **CLAUDE.md** (≤60줄) — 항상 로드되는 슬림 인덱스. Core Rules + 실행 명령 + **Routing 표**
-  - Routing 표는 "주제 → 파일"이 아니라 **"상황/작업 → 읽을 파일"**. 트리거 없는 행은 금지
-- **AGENTS.md** — Codex CLI 등 비-Claude 에이전트용 포인터. CLAUDE.md를 가리키기만 함 (내용 복제 안 함 = 드리프트 방지)
-- **docs/*.md** (각 ≤150줄) — 주제별 룰 문서. 필요할 때만 로드됨
-  - 항상: `ARCHITECTURE.md`, `CODING_RULES.md`, `PITFALLS.md`
-  - 조건부: `CONTROLLER_RULES.md`, `ENUM_CODES.md`, `RESPONSE_KEYS.md`, `DB_RULES.md`, `DEPLOY.md`
-- **docs/tasks/*.md** (각 ≤80줄) — 반복 작업 playbook. 번호 절차 + 단계마다 `file:line` 근거
-  - git log에서 같은 파일 묶음이 3회 이상 함께 수정된 작업만 생성 (예: `ADD_API.md`, `ADD_MODEL.md`)
-  - 크로스파일 결합 룰은 별도 룰로 두지 않고 playbook 단계로 기록
+- **CLAUDE.md** (≤60 lines) — the always-loaded slim index: Core Rules + run commands + a **Routing table**.
+  - The Routing table maps **"situation/task → file to read"**, not "topic → file". Rows without a concrete trigger are rejected.
+- **AGENTS.md** — a pointer for Codex CLI and other non-Claude agents. It points at CLAUDE.md and never copies rule content (copies drift).
+- **docs/*.md** (≤150 lines each) — topic rule docs, loaded only when the topic comes up.
+  - Always: `ARCHITECTURE.md`, `CODING_RULES.md`, `PITFALLS.md`
+  - Conditional: `CONTROLLER_RULES.md`, `ENUM_CODES.md`, `RESPONSE_KEYS.md`, `DB_RULES.md`, `DEPLOY.md`
+- **docs/tasks/*.md** (≤80 lines each) — playbooks for recurring tasks: numbered steps, each citing `file:line` evidence.
+  - Generated only for tasks where `git log` shows the same file set changed together ≥3 times (e.g. `ADD_API.md`, `ADD_MODEL.md`).
+  - Cross-file couplings are recorded as playbook steps, not as standalone rules.
 
-## 룰 형식
+## Rule format
 
-모든 룰은 등급 + 이유 + 대비 예시를 갖는다.
+Every rule carries a grade, a reason, and a contrasting pair of examples.
 
 ```markdown
-- **[MUST|NEVER|PREFER]** 룰 한 줄
-  - why: 한 줄
-  - ❌ 이 프로젝트의 실제 위반 예 (file:line 또는 스니펫)
-  - ✅ 올바른 예
+- **[MUST|NEVER|PREFER]** <rule, one line>
+  - why: <one line>
+  - ❌ <a real violation from THIS project — file:line or snippet>
+  - ✅ <the correct form — real project code>
 ```
 
-충돌 시 우선순위: `NEVER` > `MUST` > `PREFER`.
-`PITFALLS.md`는 **증상 → 원인 → 수정** 형식. 증상은 에러 메시지 그대로 적어 grep 가능하게 한다.
+Conflict priority: `NEVER` > `MUST` > `PREFER`.
+`PITFALLS.md` uses **symptom → cause → fix**, with the symptom quoting the error
+message verbatim so it stays greppable.
 
-## 핵심 원칙
+## Core principle
 
-**코드가 말해주지 못하는 것만 기록한다.**
-`ls` 한 번, 파일 하나 읽기, grep 한 번으로 알 수 있는 사실은 룰이 아니다.
-크로스파일 결합, 필수 순서, 금지 행위, 진행 중인 마이그레이션 — 이런 것만 룰이 된다.
+**Record only what the code cannot tell you.**
+Anything one `ls`, one file read, or one grep would reveal is not a rule.
+Cross-file couplings, required ordering, forbidden actions, in-flight migrations —
+those are rules.
 
-## 설치
+## Language
+
+The rule set is written in one language per run, chosen in this order:
+
+1. The project's existing `CLAUDE.md` / `docs/*.md` / `README` language.
+2. The language you are writing in.
+3. English.
+
+Structural tokens never change: `MUST` / `NEVER` / `PREFER`, `why:`, the ❌/✅
+markers, UPPERCASE file names, and the `<!-- generated by rule-architect -->`
+marker stay as-is in every language.
+
+## Install
 
 ```bash
 git clone https://github.com/moveju112/rule-architect.git ~/.claude/skills/rule-architect
 
-# 슬래시 명령으로 쓰려면 (선택)
+# optional — register the slash command
 ln -s ~/.claude/skills/rule-architect/commands/rule-architect.md ~/.claude/commands/
 ```
 
-링크를 걸지 않으면 `/rule-architect` 슬래시 명령은 등록되지 않는다.
-그래도 자연어 트리거로는 스킬이 동작한다.
+Without the symlink the `/rule-architect` slash command is not registered, but the
+skill still fires on natural-language triggers.
 
-## 사용
+## Usage
 
 ```
 /rule-architect [project-path]
-/rule-architect [project-path] --update   # 기존 룰 diff 갱신
+/rule-architect [project-path] --update   # diff-update an existing rule set
 ```
 
-자연어: "이 프로젝트 룰 만들어줘", "CLAUDE.md 고도화해줘"
+Natural language, either language:
 
-## 검증
+| English | Korean |
+|---|---|
+| "make rules for this project" | "이 프로젝트 룰 만들어줘" |
+| "generate CLAUDE.md" | "CLAUDE.md 만들어" |
+| "upgrade the project rules" | "프로젝트 룰 고도화해줘" |
 
-- `scripts/verify_rules.py` — 링크 무결성(양방향), 줄 수 예산, placeholder 스캔, **evidence 신선도**
-  - evidence 신선도: 룰이 인용한 `path/file.ext:42`가 실제 존재하는지 검사. 죽은 인용 = 실패 (stale 룰 탐지)
-- 퀴즈 테스트 — 생성된 룰만 보고(소스 접근 없이) 서브에이전트가 5문항에 답한다. 구성 고정:
-  - **회상 3** — "새 모델은 어디에 등록하나?"
-  - **판단 1** — "X 하려는데 Y 방식 써도 되나?" (룰 적용 능력 측정)
-  - **negative 1** — 룰에 없는 걸 묻는다. "룰에 없음, 소스 확인 필요"라 답해야 통과. 지어내면 실패
-  - 4문항 이상 정답 **AND** negative 통과 → pass
+## Verification
 
-## Hook 승격
+Two gates, and the rule set is not done until both pass.
 
-lint·hook으로 기계 강제 가능한 룰(네이밍, 금지 import, 포맷)은 **문서에 기록하지 않는다.**
-최종 리포트에 "hook 승격 후보"로만 제시하고, 적용은 사용자가 명시 요청할 때만 한다.
-문서 룰 총량이 줄면 항상 로드되는 컨텍스트 품질이 올라간다.
+- **`scripts/verify_rules.py <project-root>`** — bidirectional link integrity, line
+  budgets, placeholder scan, and **citation freshness**: every backticked
+  `path/file.ext:42` a rule cites must exist. A dead citation fails the run, which
+  is how stale rules are caught. Exit 0 = pass.
+- **Quiz test** — a fresh subagent answers 5 questions given ONLY the generated
+  rules, with no source access. Fixed mix:
+  - **3 recall** — "Where does a new model have to be registered?"
+  - **1 judgment** — "I want to do X; is approach Y allowed?" (measures application, not recall)
+  - **1 negative** — something the rules do not cover. It passes only if the agent
+    says "not in the rules, check the source" instead of inventing an answer.
+  - Pass = ≥4 correct **AND** the negative question passed.
 
-## 선택 연동
+The script checks form; the quiz is the only content-quality gate.
 
-[md-en-kr](https://github.com/moveju112/md-en-kr) 스킬이 설치돼 있으면 마지막에 영어 압축을 제안한다 (강제 아님).
+## Hook promotion
+
+Rules a machine can enforce — naming, forbidden imports, formatting — are **not**
+written into the docs. Lint and hooks catch those better than prose does. They are
+listed in the final report as "hook promotion candidates", and applied only when you
+explicitly ask. Fewer prose rules means better always-loaded context.
+
+## Optional integration
+
+If the [md-en-kr](https://github.com/moveju112/md-en-kr) skill is installed, the run
+offers English compression at the end. It is an offer, never automatic.
+
+## Repository notes
+
+`docs/design.md` and `docs/test-log.md` are dated internal records from the original
+build and are kept in Korean as written.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
