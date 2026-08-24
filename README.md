@@ -197,12 +197,43 @@ Every traversal is bounded (`--max-files`, `--max-bytes`, `--max-commits`), vend
 and build directories are skipped, and hitting a cap sets a `truncated` flag, so a
 partial scan can never be mistaken for a complete one.
 
+## Harvested rules
+
+A repo scan knows what the project contains. It cannot know what the agent kept
+getting wrong in it. `scripts/harvest.py <root>` reads this project's past session
+transcripts and prints your own corrections — recency-ordered, credential-redacted,
+with a table of the terms that recur across different corrections. Corrections are
+the highest-yield rule source there is: someone already paid for each one.
+
+The script only measures. A candidate is promoted to a rule only when it repeats
+(≥2 corrections), is recent, belongs to this project, and still agrees with the
+current code — then it cites `file:line` evidence like any other rule. Nothing from
+the harvest lands in a rule file verbatim.
+
+```bash
+python3 scripts/harvest.py <root> --days 180 --limit 60
+```
+
 ## Hook promotion
 
-Rules a machine can enforce — naming, forbidden imports, formatting — are **not**
-written into the docs. Lint and hooks catch those better than prose does. They are
-listed in the final report as "hook promotion candidates", and applied only when you
-explicitly ask. Fewer prose rules means better always-loaded context.
+Rules a machine can enforce — forbidden calls, forbidden imports, banned paths — are
+**not** written into the docs. Prose depends on the agent having loaded and honoured
+it; a hook does not. They are listed in the final report as hook promotion
+candidates, and emitted only when you explicitly ask:
+
+```bash
+python3 scripts/hookgen.py emit <root> --rules spec.json            # spec + guard, prints the settings entry
+python3 scripts/hookgen.py emit <root> --rules spec.json --write    # also merges it into .claude/settings.json
+python3 scripts/hookgen.py check <root>                             # what is already installed
+```
+
+`emit` installs `.rule-architect/hooks.json` (the rules) and `.claude/hooks/rule_guard.py`
+(a generic `PreToolUse` guard that reads them). The guard blocks the write and tells the
+agent which rule it broke; it fails open on any internal error, so a guard bug can never
+wedge a session. `--write` edits your harness config, so it is never passed on its own.
+
+Only rules whose violation a regex can name get promoted. Anything needing type
+information, call graphs, or judgement stays prose.
 
 ## Optional integration
 
@@ -218,7 +249,8 @@ python3 tests/test_rules.py   # clones the fixture per case, breaks one contract
 Layout:
 
 ```
-scripts/     scan.py, manifest.py, verify_rules.py, quiz.py
+scripts/     scan.py, harvest.py, manifest.py, verify_rules.py, quiz.py,
+             hookgen.py, rule_guard.py (copied into projects, not run here)
 tests/       test_rules.py + fixtures/good/ (a rule set that passes strict)
 docs/adr/    decisions and their consequences
 archive/     dated records from earlier builds — not the current contract

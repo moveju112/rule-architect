@@ -8,6 +8,8 @@ contract, so every check has a test that fails when the check stops working.
 No framework, no fixtures directory magic — copy, mutate, run, assert.
 """
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +22,9 @@ VERIFY = ROOT / 'scripts' / 'verify_rules.py'
 MANIFEST = ROOT / 'scripts' / 'manifest.py'
 QUIZ = ROOT / 'scripts' / 'quiz.py'
 SCAN = ROOT / 'scripts' / 'scan.py'
+HARVEST = ROOT / 'scripts' / 'harvest.py'
+HOOKGEN = ROOT / 'scripts' / 'hookgen.py'
+GUARD = ROOT / 'scripts' / 'rule_guard.py'
 
 FAILED = []
 
@@ -369,11 +374,136 @@ def scanCases():
         nested.cleanup()
 
 
+# Feed a PreToolUse payload to a guard installed under `root`
+def runGuard(root, payload):
+    result = subprocess.run([sys.executable, str(root / '.claude' / 'hooks' / 'rule_guard.py')],
+                            input=json.dumps(payload), capture_output=True, text=True,
+                            timeout=60, env={**os.environ, 'CLAUDE_PROJECT_DIR': str(root)})
+    return result.returncode, result.stdout + result.stderr
+
+
+def hookgenCases():
+    fixture = Fixture()
+    try:
+        spec = fixture.path('spec.json')
+        spec.write_text(json.dumps({'rules': [{
+            'id': 'no-direct-engine', 'glob': 'src/**/*.py',
+            'forbid': r'create_async_engine\(',
+            'message': 'reuse get_engine()', 'evidence': 'src/db.py:3'}]}), encoding='utf-8')
+        code, out = run(HOOKGEN, 'emit', fixture.root, '--rules', spec)
+        check('hookgen emits the spec and the guard',
+              code == 0 and fixture.path('.rule-architect/hooks.json').is_file()
+              and fixture.path('.claude/hooks/rule_guard.py').is_file(), out[:160])
+        check('hookgen prints the settings entry when not writing',
+              'PreToolUse' in out and 'settings.json' in out, out[:160])
+
+        target = str(fixture.path('src/x.py'))
+        code, out = runGuard(fixture.root, {'tool_name': 'Write', 'tool_input': {
+            'file_path': target, 'content': 'engine = create_async_engine(dsn)'}})
+        check('guard blocks a forbidden write inside the glob',
+              code == 2 and 'no-direct-engine' in out, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Write', 'tool_input': {
+            'file_path': target, 'content': 'engine = get_engine()'}})
+        check('guard allows a clean write', code == 0, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Write', 'tool_input': {
+            'file_path': str(fixture.path('tests/x.py')),
+            'content': 'create_async_engine(1)'}})
+        check('guard ignores a path outside the glob', code == 0, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'MultiEdit', 'tool_input': {
+            'file_path': target,
+            'edits': [{'new_string': 'x = 1'}, {'new_string': 'create_async_engine(2)'}]}})
+        check('guard inspects every MultiEdit chunk', code == 2, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Read', 'tool_input': {
+            'file_path': target}})
+        check('guard ignores non-write tools', code == 0, out[:160])
+
+        code, out = runGuard(fixture.root, {'not': 'a payload'})
+        check('guard fails open on a payload it cannot use', code == 0, out[:160])
+
+        code, out = run(HOOKGEN, 'emit', fixture.root, '--rules', spec, '--write')
+        code2, out2 = run(HOOKGEN, 'emit', fixture.root, '--rules', spec, '--write')
+        settings = json.loads(fixture.path('.claude/settings.json').read_text(encoding='utf-8'))
+        entries = settings['hooks']['PreToolUse']
+        check('--write merges once and stays idempotent',
+              code == 0 and code2 == 0 and len(entries) == 1 and 'ALREADY' in out2,
+              (out + out2)[:160])
+
+        code, out = run(HOOKGEN, 'check', fixture.root)
+        check('hookgen check reports the installed state',
+              code == 0 and json.loads(out)['registered'] is True, out[:160])
+
+        bad = fixture.path('bad.json')
+        bad.write_text(json.dumps({'rules': [{'id': 'Bad ID', 'glob': '', 'forbid': '([',
+                                              'message': ''}]}), encoding='utf-8')
+        code, out = run(HOOKGEN, 'emit', fixture.root, '--rules', bad)
+        check('hookgen rejects an unenforceable spec',
+              code == 1 and 'not a valid regex' in out, out[:160])
+    finally:
+        fixture.cleanup()
+
+
+# One transcript record as Claude Code writes it
+def transcriptLine(cwd, text, stamp, session='s1'):
+    return json.dumps({'type': 'user', 'cwd': cwd, 'sessionId': session,
+                       'timestamp': stamp, 'message': {'role': 'user', 'content': text}})
+
+
+def harvestCases():
+    fixture = Fixture()
+    try:
+        root = fixture.root
+        transcripts = Path(fixture.tmp) / 'projects' / re.sub(r'[^A-Za-z0-9]', '-', str(root))
+        transcripts.mkdir(parents=True)
+        lines = [
+            transcriptLine(str(root), '절대 docs 폴더는 직접 수정하지마', '2026-08-01T00:00:00.000Z'),
+            transcriptLine(str(root), 'docs 폴더 건드리지 말라고 말했잖아', '2026-08-02T00:00:00.000Z'),
+            transcriptLine(str(root), '스키마 좀 정리해줘', '2026-08-03T00:00:00.000Z'),
+            transcriptLine('/somewhere/else', '이게 아니라 저거야', '2026-08-04T00:00:00.000Z'),
+            transcriptLine(str(root), 'password = hunter2 로 하지마', '2026-08-05T00:00:00.000Z'),
+            json.dumps({'type': 'user', 'cwd': str(root), 'timestamp': '2026-08-06T00:00:00.000Z',
+                        'isMeta': True, 'message': {'role': 'user', 'content': '틀렸어'}}),
+            transcriptLine(str(root), '틀렸어 ' + ('x' * 700), '2026-08-07T00:00:00.000Z'),
+        ]
+        (transcripts / 'a.jsonl').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent, '--days', 0)
+        payload = json.loads(out)
+        texts = [item['text'] for item in payload['corrections']]
+        check('harvest picks up corrections and skips plain requests',
+              code == 0 and payload['counts']['corrections'] == 3
+              and not any('스키마' in text for text in texts), out[:200])
+        check('harvest ignores sessions from another project',
+              not any('저거야' in text for text in texts), out[:200])
+        check('harvest ignores meta records and long specs',
+              not any(text.startswith('틀렸어') for text in texts), out[:200])
+        check('harvest redacts credential-shaped text',
+              any('<redacted>' in text for text in texts)
+              and not any('hunter2' in text for text in texts), out[:200])
+        check('harvest reports recurring terms across corrections',
+              any(term['term'] == 'docs' and term['corrections'] >= 2
+                  for term in payload['repeatedTerms']), out[:200])
+        check('harvest orders corrections newest first',
+              [item['at'] for item in payload['corrections']]
+              == sorted((item['at'] for item in payload['corrections']), reverse=True), out[:200])
+
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent, '--days', 1)
+        check('harvest honours the recency window',
+              code == 0 and json.loads(out)['counts']['corrections'] == 0, out[:200])
+    finally:
+        fixture.cleanup()
+
+
 def main():
     verifyCases()
     manifestCases()
     quizCases()
     scanCases()
+    hookgenCases()
+    harvestCases()
     print()
     if FAILED:
         print(f'{len(FAILED)} FAILED: ' + ', '.join(FAILED))
