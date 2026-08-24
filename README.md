@@ -227,8 +227,12 @@ python3 scripts/hookgen.py emit <root> --rules spec.json --write    # also merge
 python3 scripts/hookgen.py check <root>                             # what is already installed
 ```
 
+Two rule shapes: `forbid` matches a regex against the text a call would write; `deny` blocks a path
+outright for the tools it lists (`["Read", "Grep", "Glob"]` keeps an off-limits directory unread — a
+repo-wide grep with no path is the one case it cannot attribute).
+
 `emit` installs `.rule-architect/hooks.json` (the rules) and `.claude/hooks/rule_guard.py`
-(a generic `PreToolUse` guard that reads them). The guard blocks the write and tells the
+(a generic `PreToolUse` guard that reads them). The guard blocks the call and tells the
 agent which rule it broke; it fails open on any internal error, so a guard bug can never
 wedge a session. `--write` edits your harness config, so it is never passed on its own.
 

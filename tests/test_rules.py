@@ -436,6 +436,32 @@ def hookgenCases():
         check('hookgen check reports the installed state',
               code == 0 and json.loads(out)['registered'] is True, out[:160])
 
+        denySpec = fixture.path('deny.json')
+        denySpec.write_text(json.dumps({'rules': [{
+            'id': 'no-team-docs', 'glob': 'docs/**', 'tools': ['Read', 'Grep', 'Glob'],
+            'deny': True, 'message': 'docs/ is team-owned; read docs_local/'}]}), encoding='utf-8')
+        code, out = run(HOOKGEN, 'emit', fixture.root, '--rules', denySpec)
+        check('hookgen accepts a deny rule with no forbid regex', code == 0, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Read', 'tool_input': {
+            'file_path': str(fixture.path('docs/ARCHITECTURE.md'))}})
+        check('guard denies reading a denied path', code == 2 and 'no-team-docs' in out, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Grep', 'tool_input': {
+            'pattern': 'x', 'path': 'docs'}})
+        check('guard denies a Grep scoped into a denied directory', code == 2, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Grep', 'tool_input': {'pattern': 'x'}})
+        check('guard allows a repo-wide Grep with no path', code == 0, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Read', 'tool_input': {
+            'file_path': str(fixture.path('src/db.py'))}})
+        check('guard allows reading outside the denied path', code == 0, out[:160])
+
+        code, out = runGuard(fixture.root, {'tool_name': 'Write', 'tool_input': {
+            'file_path': str(fixture.path('docs/ARCHITECTURE.md')), 'content': 'x'}})
+        check('deny rule does not fire for a tool it did not list', code == 0, out[:160])
+
         bad = fixture.path('bad.json')
         bad.write_text(json.dumps({'rules': [{'id': 'Bad ID', 'glob': '', 'forbid': '([',
                                               'message': ''}]}), encoding='utf-8')

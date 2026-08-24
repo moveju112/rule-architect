@@ -243,6 +243,19 @@ final report as "hook promotion candidates", each as a spec entry:
 `forbid` is a Python regex matched against the text a tool call would WRITE, and `glob` is matched
 against the project-relative path (`**/` crosses directories, `*` does not).
 
+A rule can also deny a path outright — no regex, and not only for writes. Use it for an area the
+project keeps off-limits: another team's directory, generated output, a file whose existence is the
+defect:
+
+```json
+{"id": "no-team-docs", "glob": "docs/**", "tools": ["Read", "Grep", "Glob"], "deny": true,
+ "message": "docs/ is team-owned — the rules live in docs_local/"}
+```
+
+`tools` defaults to the write tools, so a `deny` rule without it blocks writes only. One limit worth
+stating in the report: a repo-wide `Grep` with no `path` carries no directory to attribute, so it is
+not blocked — path-scoped reads are.
+
 **Emitting is opt-in and stays that way.** Only when the user explicitly asks:
 
 ```bash

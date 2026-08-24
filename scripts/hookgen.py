@@ -17,12 +17,19 @@ With `--write` it is merged into `<root>/.claude/settings.json` — additive and
 idempotent, so re-running never duplicates the entry. Only pass `--write` when
 the user asked for it: this edits their harness configuration.
 
-Spec format (`--rules`):
-  {"rules": [{"id": "no-direct-engine",
-              "glob": "src/**/*.py",
-              "forbid": "create_async_engine\\\\(",
-              "message": "reuse get_engine() — docs/DB_RULES.md",
-              "evidence": "src/db.py:12"}]}
+Spec format (`--rules`) — two rule shapes:
+
+  forbid: a regex matched against the text the call would WRITE
+  {"id": "no-direct-engine", "glob": "src/**/*.py",
+   "forbid": "create_async_engine\\\\(",
+   "message": "reuse get_engine() — docs/DB_RULES.md", "evidence": "src/db.py:12"}
+
+  deny: a path a listed tool may not touch at all (no regex)
+  {"id": "no-team-docs", "glob": "docs/**", "tools": ["Read", "Grep", "Glob"],
+   "deny": true, "message": "docs/ is team-owned; read docs_local/ instead"}
+
+  `tools` defaults to the write tools. A repo-wide Grep with no `path` carries no
+  directory to attribute, so it is not blocked.
 
 Exit codes: 0 = ok, 1 = invalid spec or write failure.
 """
@@ -36,7 +43,7 @@ from pathlib import Path
 SPEC_REL = Path('.rule-architect') / 'hooks.json'
 GUARD_REL = Path('.claude') / 'hooks' / 'rule_guard.py'
 SETTINGS_REL = Path('.claude') / 'settings.json'
-MATCHER = 'Edit|Write|MultiEdit|NotebookEdit'
+MATCHER = 'Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob'
 ID_RE = re.compile(r'^[a-z0-9][a-z0-9-]{1,63}$')
 SCHEMA = 'rule-architect/hooks@1'
 
@@ -60,9 +67,14 @@ def validate(rules):
         elif identifier in seen:
             problems.append(f'rule {index}: duplicate id {identifier!r}')
         seen.add(identifier)
-        for field in ('glob', 'forbid', 'message'):
+        required = ('glob', 'message') if rule.get('deny') else ('glob', 'forbid', 'message')
+        for field in required:
             if not str(rule.get(field, '')).strip():
                 problems.append(f'rule {index}: empty `{field}`')
+        tools = rule.get('tools')
+        if tools is not None and (not isinstance(tools, list) or not tools
+                                  or not all(isinstance(name, str) and name for name in tools)):
+            problems.append(f'rule {index}: `tools` must be a non-empty list of tool names')
         pattern = str(rule.get('forbid', ''))
         if pattern:
             try:
@@ -73,7 +85,7 @@ def validate(rules):
 
 
 def normalize(rules):
-    keep = ('id', 'glob', 'forbid', 'message', 'evidence')
+    keep = ('id', 'glob', 'tools', 'deny', 'forbid', 'message', 'evidence')
     return [{field: rule[field] for field in keep if field in rule} for rule in rules]
 
 

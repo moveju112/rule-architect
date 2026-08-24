@@ -5,8 +5,13 @@ This file is copied into a project as `.claude/hooks/rule_guard.py` by
 `hookgen.py`. It is generic: every project-specific detail lives in
 `.rule-architect/hooks.json`, so the guard itself never needs regenerating.
 
+Two rule shapes:
+
+  forbid — a regex matched against the text a tool call would WRITE
+  deny   — a path that a listed tool may not touch at all (no regex)
+
 Contract with the harness: read the PreToolUse payload on stdin; exit 2 with a
-message on stderr to block the edit and tell the agent why; exit 0 to allow.
+message on stderr to block the call and tell the agent why; exit 0 to allow.
 
 Fail open, always. A guard that crashes must not stop the work — a broken
 enforcement is a bug in the rules, not a reason to wedge the session.
@@ -19,7 +24,8 @@ import sys
 from pathlib import Path
 
 SPEC_REL = Path('.rule-architect') / 'hooks.json'
-WRITE_TOOLS = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'}
+WRITE_TOOLS = ('Edit', 'Write', 'MultiEdit', 'NotebookEdit')
+READ_TOOLS = ('Read', 'Grep', 'Glob')
 
 
 def projectRoot():
@@ -33,8 +39,12 @@ def matchesGlob(relative, glob):
         r'\*\*', '.*').replace(r'\*', '[^/]*').replace(r'\?', '[^/]')
     if re.fullmatch(pattern, relative):
         return True
-    # a bare directory prefix ("src/") covers everything under it
-    return glob.endswith('/') and relative.startswith(glob)
+    if fnmatch.fnmatch(relative, glob):
+        return True
+    # a directory prefix ("docs/", "docs/**") covers everything under it
+    bare = glob[:-3] if glob.endswith('/**') else glob
+    return bool(bare) and (relative == bare.rstrip('/')
+                           or relative.startswith(bare.rstrip('/') + '/'))
 
 
 # Every piece of text this tool call would write into the file
@@ -49,6 +59,34 @@ def writtenText(toolName, toolInput):
     return ''
 
 
+# The paths this call would touch, project-relative. Grep and Glob carry a
+# search root rather than a file, and a search with no path is repo-wide — that
+# one cannot be attributed to a directory, so it is not blocked.
+def targetPaths(toolInput, root):
+    raw = [toolInput.get(key) for key in ('file_path', 'notebook_path', 'path')]
+    relatives = []
+    for value in raw:
+        if not value:
+            continue
+        candidate = Path(str(value))
+        resolved = candidate if candidate.is_absolute() else root / candidate
+        try:
+            relative = resolved.resolve().relative_to(root).as_posix()
+        except ValueError:
+            continue  # outside the project — not ours to police
+        if relative != '.':
+            relatives.append(relative)
+    return relatives
+
+
+def block(rule, relative, detail=''):
+    identifier = rule.get('id') or 'rule'
+    message = rule.get('message') or 'forbidden by a project rule'
+    print(f'BLOCKED [{identifier}] {relative}: {message}'
+          + (f'\n  matched: {detail[:120]}' if detail else ''), file=sys.stderr)
+    return 2
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -56,19 +94,8 @@ def main():
         return 0
 
     toolName = payload.get('tool_name') or ''
-    if toolName not in WRITE_TOOLS:
-        return 0
     toolInput = payload.get('tool_input') or {}
-    rawPath = str(toolInput.get('file_path') or toolInput.get('notebook_path') or '')
-    if not rawPath:
-        return 0
-
     root = projectRoot()
-    try:
-        relative = Path(rawPath).resolve().relative_to(root).as_posix()
-    except ValueError:
-        return 0  # outside the project — not ours to police
-
     spec = root / SPEC_REL
     if not spec.is_file():
         return 0
@@ -77,29 +104,34 @@ def main():
     except (OSError, json.JSONDecodeError):
         return 0
 
-    text = writtenText(toolName, toolInput)
-    if not text:
-        return 0
+    relatives = targetPaths(toolInput, root)
+    text = writtenText(toolName, toolInput) if toolName in WRITE_TOOLS else ''
 
     for rule in rules:
         if not isinstance(rule, dict):
             continue
         glob = str(rule.get('glob') or '')
-        forbid = str(rule.get('forbid') or '')
-        if not glob or not forbid:
+        if not glob:
             continue
-        if not (matchesGlob(relative, glob) or fnmatch.fnmatch(relative, glob)):
+        tools = rule.get('tools')
+        if not isinstance(tools, list) or not tools:
+            tools = list(WRITE_TOOLS)
+        if toolName not in tools:
+            continue
+        hits = [rel for rel in relatives if matchesGlob(rel, glob)]
+        if not hits:
+            continue
+        if rule.get('deny'):
+            return block(rule, hits[0])
+        forbid = str(rule.get('forbid') or '')
+        if not forbid or not text:
             continue
         try:
-            hit = re.search(forbid, text)
+            found = re.search(forbid, text)
         except re.error:
             continue
-        if hit:
-            identifier = rule.get('id') or 'rule'
-            message = rule.get('message') or 'forbidden by a project rule'
-            print(f'BLOCKED [{identifier}] {relative}: {message}\n'
-                  f'  matched: {hit.group(0)[:120]}', file=sys.stderr)
-            return 2
+        if found:
+            return block(rule, hits[0], found.group(0))
     return 0
 
 
