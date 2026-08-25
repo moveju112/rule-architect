@@ -224,7 +224,9 @@ its exit code:
 | Exit | Meaning | What you may do |
 |---|---|---|
 | 0 | every generated file is byte-identical to what was recorded | regenerate freely |
-| 1 | at least one file was edited by a human, or a recorded file is gone | **stop and report the conflict.** Never overwrite a `modified` file. Offer a diff, or edit only the sections the user names. If the user explicitly confirms the edits were intentional — a hand revision, or a rewrite by another tool (e.g. a compression skill that replaced whole files) — re-baseline with `manifest.py record <root> <files> --replace`, then proceed. **Re-baselining without that explicit confirmation is forbidden**: it silently voids the very protection `check` exists for, and the next run would read someone's hand edits as generated output |
+| 1 | at least one file was edited by a human, or a recorded file is gone | **stop and report the conflict.** Never overwrite a `modified` file. Offer a diff, or edit only the sections the user names. If the user explicitly confirms the edits were intentional — a hand revision, or a rewrite by another tool (e.g. a compression skill that replaced whole files) — re-baseline with `manifest.py record <root> <files>` (merges) — or, only when passing the **complete**
+tracked set, `--replace`. **`--replace` with a partial list silently drops every file you did not
+list**, so a one-file re-baseline with it leaves the rest unverified. Then proceed. **Re-baselining without that explicit confirmation is forbidden**: it silently voids the very protection `check` exists for, and the next run would read someone's hand edits as generated output |
 | 2 | legacy project — no manifest, so nothing can be proven generated | treat EVERY existing rule file as hand-written. Add new files and new rows only; never rewrite an existing file without explicit per-file permission |
 
 Beyond that gate:
