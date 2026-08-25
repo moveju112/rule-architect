@@ -91,7 +91,7 @@ All are stdlib-only Python and live in `scripts/`. Under a plugin install, prefi
 |---|---|
 | `scan.py <root>` | measures the observable signals and prints a JSON manifest — the reproducible half of step 1 |
 | `harvest.py <root>` | mines past session transcripts for the user's own corrections — the rules a cold scan cannot see |
-| `manifest.py record\|check <root>` | records a hash per generated file; `check` refuses to overwrite hand edits |
+| `manifest.py record[--replace]\|check <root>` | records a hash per generated file; `check` refuses to overwrite hand edits. `--replace` re-baselines files changed outside rule-architect — **requires explicit user confirmation**, see §Update Mode |
 | `verify_rules.py <root>` | the form gate. Strict by default; `--lenient` demotes target overruns to warnings |
 | `quiz.py scaffold\|grade <root>` | builds the isolation prompt and grades a run. It never executes a model |
 | `hookgen.py emit\|check <root>` | compiles machine-checkable rules into a working PreToolUse guard (opt-in, see §Hook Promotion) |
@@ -217,7 +217,7 @@ its exit code:
 | Exit | Meaning | What you may do |
 |---|---|---|
 | 0 | every generated file is byte-identical to what was recorded | regenerate freely |
-| 1 | at least one file was edited by a human, or a recorded file is gone | **stop and report the conflict.** Never overwrite a `modified` file. Offer a diff, or edit only the sections the user names |
+| 1 | at least one file was edited by a human, or a recorded file is gone | **stop and report the conflict.** Never overwrite a `modified` file. Offer a diff, or edit only the sections the user names. If the user explicitly confirms the edits were intentional — a hand revision, or a rewrite by another tool (e.g. a compression skill that replaced whole files) — re-baseline with `manifest.py record <root> <files> --replace`, then proceed. **Re-baselining without that explicit confirmation is forbidden**: it silently voids the very protection `check` exists for, and the next run would read someone's hand edits as generated output |
 | 2 | legacy project — no manifest, so nothing can be proven generated | treat EVERY existing rule file as hand-written. Add new files and new rows only; never rewrite an existing file without explicit per-file permission |
 
 Beyond that gate:
