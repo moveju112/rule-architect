@@ -172,8 +172,11 @@ an empty harvest is a normal outcome for a young project.
 
 ## Verify
 
-1. **Script** — `python3 scripts/verify_rules.py <project-root>`. **Strict by default: exceeding a
-   target budget fails, not warns.** `--lenient` demotes target overruns to warnings; hard limits
+1. **Script** — `python3 scripts/verify_rules.py <project-root>`. When the project uses a different
+   index or rule directory, pass them — e.g. a personal rule set:
+   `verify_rules.py <root> --index CLAUDE.local.md --docs-dir docs_local`. Without those flags the
+   script looks for `CLAUDE.md` + `docs/` and stops at `FAIL: ... not found`. **Strict by default:
+   exceeding a target budget fails, not warns.** `--lenient` demotes target overruns to warnings; hard limits
    fail in both modes. Never reach for `--lenient` to get a green run — it exists for a project that
    has consciously accepted a bigger budget, and the report must say so. Enforces:
    - link integrity both directions, and the required docs (`ARCHITECTURE.md`, `CODING_RULES.md`,
@@ -181,12 +184,16 @@ an empty harvest is a normal outcome for a young project.
    - CLAUDE.md ≤60 lines (hard fail >80), docs ≤150 (hard >190), playbooks ≤80 (hard >100)
    - Core Rules ≤10 bullets; routing rows carry a trigger that is neither empty nor a restatement
      of the file name
-   - every graded rule (`MUST`/`NEVER`/`PREFER`) carries a `why:` line and a ✅ example
+   - every graded rule (`MUST`/`NEVER`/`PREFER`) carries a `why:` line and a ✅ example. A rule that
+     delegates to another doc by link instead of restating it is exempt — demanding `why:`/✅ there
+     would recreate the duplication you just removed
    - no `TBD`/`TODO`/placeholder; UPPERCASE naming in docs links
    - **evidence freshness** — every backticked citation must resolve: a path with a slash, an
      explicit `:line`, a bare build file (`Dockerfile`, `Makefile`), or a dotfile. A `:42` cite also
      fails when the file is shorter than 42 lines, which is how a rule that survived a refactor
-     gets caught. Bare naming patterns (`UPPERCASE.md`) are not citations and are left alone.
+     gets caught. Bare naming patterns (`UPPERCASE.md`) are not citations and are left alone, and
+     neither are git refs (`origin/main`, `HEAD`), home paths (`~/.ssh`), or globs (`docs/*.md`) —
+     they contain a slash but are not project files, and flagging them buries the real findings.
    - Exit 0 = pass. `--json` prints the same verdict as a machine-readable object.
 2. **Quiz test** — the only content-quality gate, and the one that must leave a record.
    - `python3 scripts/quiz.py scaffold <root> --lang <ko|en> --run-id <id>` prints the isolation

@@ -53,6 +53,9 @@ LINE_SUFFIX_RE = re.compile(r'^(.*?):(\d+)(?:-(\d+))?$')
 GRADE_RE = re.compile(r'^\s*[-*]\s*\*\*\[?(MUST|NEVER|PREFER)\b')
 HEADING_RE = re.compile(r'^#{1,6}\s')
 
+GIT_REF_PREFIXES = ('origin/', 'upstream/', 'refs/')
+GIT_REFS = {'HEAD', 'FETCH_HEAD', 'ORIG_HEAD'}
+
 # Extensionless build files that are still real path citations
 BARE_FILES = {
     'Dockerfile', 'Makefile', 'Procfile', 'Justfile', 'Rakefile', 'Gemfile',
@@ -86,6 +89,13 @@ def isCitation(raw, hasLine):
         return False
     if raw.startswith(('http://', 'https://', '<', '$')):
         return False
+    # 슬래시가 있어도 프로젝트 파일이 아닌 것들. 이걸 걸러내지 않으면 오탐이 진짜 지적을 묻는다.
+    if raw.startswith(GIT_REF_PREFIXES) or raw in GIT_REFS:
+        return False          # git ref: origin/main, refs/heads/x, HEAD
+    if raw.startswith('~/'):
+        return False          # 홈 경로 — 프로젝트 루트 기준이 아니다
+    if any(ch in raw for ch in '*?['):
+        return False          # glob 패턴: docs_local/*.md
     return '/' in raw or hasLine or raw in BARE_FILES or raw.startswith('.')
 
 
@@ -158,6 +168,11 @@ def checkRuleFormat(path, errors):
                 break
             body.append(follow)
         joined = '\n'.join(body)
+        # 정본을 다른 룰 문서에 위임한 항목은 면제한다. 중복 제거의 결과물이라
+        # why/✅ 를 요구하면 방금 없앤 중복을 다시 쓰게 만든다.
+        delegated = ANY_LINK_RE.search(line + '\n' + joined) and 'why:' not in joined
+        if delegated:
+            continue
         if 'why:' not in joined:
             errors.append(f'{path.name}:{index + 1}: graded rule missing `why:` line')
         if '✅' not in joined:
