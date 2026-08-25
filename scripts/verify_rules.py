@@ -2,6 +2,7 @@
 """Verification script for rule-architect output.
 
 Usage: python3 verify_rules.py <project-root> [--lenient] [--json]
+       [--index CLAUDE.md] [--docs-dir docs]  # 개인 룰 세트는 CLAUDE.local.md + docs_local/
 
 Checks:
 1. CLAUDE.md exists + line budget (60 target, hard limit 80)
@@ -32,6 +33,10 @@ from pathlib import Path
 
 # Budget constants
 INDEX_TARGET, INDEX_HARD = 60, 80
+# 인덱스 파일명과 룰 디렉터리명. --index / --docs-dir 로 덮어쓴다.
+# (개인 룰 세트는 CLAUDE.local.md + docs_local/ 처럼 다른 이름을 쓴다)
+INDEX_NAME = 'CLAUDE.md'
+DOCS_DIRNAME = 'docs'
 DOC_TARGET, DOC_HARD = 150, 190
 TASK_TARGET, TASK_HARD = 80, 100
 CORE_RULES_MAX = 10
@@ -171,7 +176,7 @@ def checkCoreRules(claudeMd, errors):
             start = index + 1
             break
     if start is None:
-        errors.append('CLAUDE.md: no Core Rules section found')
+        errors.append(f'{INDEX_NAME}: no Core Rules section found')
         return
     bullets = 0
     for line in lines[start:]:
@@ -180,7 +185,7 @@ def checkCoreRules(claudeMd, errors):
         if re.match(r'^\s*[-*]\s+\S', line):
             bullets += 1
     if bullets > CORE_RULES_MAX:
-        errors.append(f'CLAUDE.md: Core Rules has {bullets} bullets > {CORE_RULES_MAX}')
+        errors.append(f'{INDEX_NAME}: Core Rules has {bullets} bullets > {CORE_RULES_MAX}')
 
 
 # Routing rows must carry a trigger that says more than the file name
@@ -202,30 +207,54 @@ def checkRoutingTable(claudeMd, errors):
         rows += 1
         trigger = cells[0]
         if not trigger or set(trigger) <= {'-', ':', ' '}:
-            errors.append(f'CLAUDE.md:{lineNo}: routing row has an empty trigger')
+            errors.append(f'{INDEX_NAME}:{lineNo}: routing row has an empty trigger')
             continue
         stem = Path(docTarget).stem.lower()
         normalized = re.sub(r'[^a-z0-9]', '', trigger.lower())
         if normalized in (stem.replace('_', ''), stem.replace('_', '') + 'md'):
             errors.append(
-                f'CLAUDE.md:{lineNo}: routing trigger just repeats the file name '
+                f'{INDEX_NAME}:{lineNo}: routing trigger just repeats the file name '
                 f'({trigger!r}) — describe the situation instead'
             )
     if rows == 0:
-        errors.append('CLAUDE.md: no routing table rows link a docs file')
+        errors.append(f'{INDEX_NAME}: no routing table rows link a docs file')
+
+
+def parseNamedOption(argv, flag, default):
+    """--flag value 또는 --flag=value 를 읽고 소비한 토큰을 argv 에서 뺀다."""
+    for index, token in enumerate(argv):
+        if token == flag and index + 1 < len(argv):
+            value = argv[index + 1]
+            del argv[index:index + 2]
+            return value
+        if token.startswith(flag + '='):
+            value = token.split('=', 1)[1]
+            del argv[index]
+            return value
+    return default
 
 
 def main():
+    global INDEX_NAME, DOCS_DIRNAME, LINK_RE
     argv = [a for a in sys.argv[1:]]
+    INDEX_NAME = parseNamedOption(argv, '--index', INDEX_NAME)
+    DOCS_DIRNAME = parseNamedOption(argv, '--docs-dir', DOCS_DIRNAME)
+    # 룰 디렉터리명이 바뀌면 링크 정규식도 따라가야 한다 — 안 그러면 링크를 하나도 못 잡아
+    # 모든 문서가 "링크 안 됨"으로 오판된다
+    LINK_RE = re.compile(rf'\[[^\]]*\]\(({re.escape(DOCS_DIRNAME)}/[^)]+\.md)\)')
     strict = '--lenient' not in argv
     asJson = '--json' in argv
     positional = [a for a in argv if not a.startswith('--')]
     if len(positional) != 1:
-        print('usage: verify_rules.py <project-root> [--lenient] [--json]', file=sys.stderr)
+        print(
+            'usage: verify_rules.py <project-root> [--lenient] [--json] '
+            '[--index CLAUDE.md] [--docs-dir docs]',
+            file=sys.stderr,
+        )
         return 1
     root = Path(positional[0])
-    claudeMd = root / 'CLAUDE.md'
-    docsDir = root / 'docs'
+    claudeMd = root / INDEX_NAME
+    docsDir = root / DOCS_DIRNAME
     errors, warnings = [], []
 
     # 1. CLAUDE.md exists + budget
@@ -248,13 +277,13 @@ def main():
     for rel in sorted(linked):
         target = root / rel
         if not target.is_file():
-            errors.append(f'CLAUDE.md links missing file: {rel}')
+            errors.append(f'{INDEX_NAME} links missing file: {rel}')
             continue
         stem = target.stem
         if stem != stem.upper():
             errors.append(f'linked doc not UPPERCASE: {rel}')
         # task playbooks use their own budget
-        if rel.startswith('docs/tasks/'):
+        if rel.startswith(f'{DOCS_DIRNAME}/tasks/'):
             checkBudget(target, TASK_TARGET, TASK_HARD, errors, warnings, strict)
         else:
             checkBudget(target, DOC_TARGET, DOC_HARD, errors, warnings, strict)
@@ -265,11 +294,11 @@ def main():
 
     # 4. required docs must exist and be linked
     for required in REQUIRED_DOCS:
-        rel = f'docs/{required}'
+        rel = f'{DOCS_DIRNAME}/{required}'
         if not (root / rel).is_file():
             errors.append(f'required doc missing: {rel}')
         elif rel not in linked:
-            errors.append(f'required doc not linked in CLAUDE.md: {rel}')
+            errors.append(f'required doc not linked in {INDEX_NAME}: {rel}')
 
     # 5. reverse direction: find generated docs that nothing links
     manifest = readManifest(root)
@@ -279,9 +308,9 @@ def main():
             if doc.stem != doc.stem.upper() or relPath in linked:
                 continue
             if manifest is not None and relPath not in manifest:
-                warnings.append(f'hand-written doc not linked in CLAUDE.md: {relPath}')
+                warnings.append(f'hand-written doc not linked in {INDEX_NAME}: {relPath}')
             else:
-                errors.append(f'generated doc not linked in CLAUDE.md: {relPath}')
+                errors.append(f'generated doc not linked in {INDEX_NAME}: {relPath}')
 
     # 6. AGENTS.md pointer — exists, references CLAUDE.md, is not a content copy
     agentsMd = root / 'AGENTS.md'
@@ -289,8 +318,8 @@ def main():
         errors.append('AGENTS.md pointer not found')
     else:
         agentsText = agentsMd.read_text(encoding='utf-8')
-        if 'CLAUDE.md' not in agentsText:
-            errors.append('AGENTS.md does not reference CLAUDE.md')
+        if INDEX_NAME not in agentsText:
+            errors.append(f'AGENTS.md does not reference {INDEX_NAME}')
         # a pointer must stay short — copying rule bodies causes drift
         if lineCount(agentsMd) > AGENTS_MAX_LINES:
             errors.append('AGENTS.md too long — should be a pointer, not a rule copy')
@@ -311,7 +340,7 @@ def main():
         for e in errors:
             print(f'FAIL: {e}', file=sys.stderr)
         return 1
-    print(f'PASS: CLAUDE.md + {len(linked)} docs verified')
+    print(f'PASS: {INDEX_NAME} + {len(linked)} docs verified')
     return 0
 
 
