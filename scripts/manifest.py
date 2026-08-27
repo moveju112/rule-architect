@@ -9,7 +9,7 @@ Usage:
 manifest already holds; pass `--replace` to record a complete set and drop the rest.
 `check` compares the current files against those hashes before an update run.
 
-Why a hash and not a marker: a single marker at the bottom of CLAUDE.md cannot
+Why a hash and not a marker: a single marker at the bottom of AI_RULES.md cannot
 tell a hand-edited rule apart from a stale generated one, so an update either
 destroys hand-written rules or keeps rules that should have been removed. A
 per-file hash separates the two cases, and the policy on a mismatch is to stop
@@ -26,20 +26,34 @@ Exit codes: 0 = clean, 1 = conflict (modified or missing), 2 = legacy project
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
 MANIFEST_REL = Path('.rule-architect') / 'manifest.json'
-SCHEMA = 'rule-architect/manifest@1'
+SCHEMA = 'rule-architect/manifest@2'
 
 
 # sha256 of a file's bytes; None when the file is gone
 def hashFile(path):
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         return None
     digest = hashlib.sha256()
     digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+# 실파일은 내용, 심링크는 링크 타입과 대상을 기록해 조용한 일반파일 치환까지 잡는다.
+def inspectPath(path):
+    if path.is_symlink():
+        target = os.readlink(path)
+        if not path.is_file():
+            return None
+        return {'type': 'symlink', 'target': target}
+    if not path.is_file():
+        return None
+    return {'type': 'file', 'sha256': hashFile(path),
+            'lines': path.read_text(encoding='utf-8').count('\n') + 1}
 
 
 def manifestPath(root):
@@ -67,12 +81,12 @@ def commandRecord(root, targets, replace=False):
     for raw in targets:
         path = Path(raw)
         resolved = path if path.is_absolute() else root / path
-        if not resolved.is_file():
+        state = inspectPath(resolved)
+        if state is None:
             print(f'FAIL: cannot record missing file: {raw}', file=sys.stderr)
             return 1
         rel = resolved.relative_to(root).as_posix()
-        files[rel] = {'sha256': hashFile(resolved), 'lines': resolved.read_text(
-            encoding='utf-8').count('\n') + 1}
+        files[rel] = state
     target = manifestPath(root)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(
@@ -96,10 +110,15 @@ def commandCheck(root, asJson):
     recorded = data['files']
     clean, modified, missing = [], [], []
     for rel, entry in sorted(recorded.items()):
-        current = hashFile(root / rel)
+        path = root / rel
+        current = inspectPath(path)
         if current is None:
             missing.append(rel)
-        elif current == entry.get('sha256'):
+        # schema 1은 실파일 해시만 가졌다. 기존 매니페스트도 안전하게 검사한다.
+        elif entry.get('type') is None and not path.is_symlink() \
+                and current.get('sha256') == entry.get('sha256'):
+            clean.append(rel)
+        elif current == entry:
             clean.append(rel)
         else:
             modified.append(rel)

@@ -2,20 +2,21 @@
 """Verification script for rule-architect output.
 
 Usage: python3 verify_rules.py <project-root> [--lenient] [--json]
-       [--index CLAUDE.md] [--docs-dir docs]  # 개인 룰 세트는 CLAUDE.local.md + docs_local/
+       [--index AI_RULES.md] [--docs-dir docs]
+       [--entries CLAUDE.md,AGENTS.md]
 
 Checks:
-1. CLAUDE.md exists + line budget (60 target, hard limit 80)
+1. AI_RULES.md exists + line budget (60 target, hard limit 80)
 2. docs/*.md line budget (150 target, hard limit 190)
 3. docs/tasks/*.md playbook line budget (80 target, hard limit 100)
 4. Bidirectional link integrity:
-   - every docs file CLAUDE.md links actually exists
-   - every generated docs/**/UPPERCASE.md is linked from CLAUDE.md
+   - every docs file AI_RULES.md links actually exists
+   - every generated docs/**/UPPERCASE.md is linked from AI_RULES.md
 5. leftover placeholder scan (TBD, TODO, FIXME, XXX, <placeholder>)
 6. linked docs use UPPERCASE naming
 7. evidence freshness: every `path[:line]` a rule cites must exist, and the
    line number must fall inside the file
-8. AGENTS.md pointer exists + references CLAUDE.md (not a content copy)
+8. runtime entry files are relative symlinks to AI_RULES.md, or portable pointers
 9. required docs present (ARCHITECTURE, CODING_RULES, PITFALLS)
 10. Core Rules bullet count <= 10
 11. Routing table rows carry a non-empty trigger that is not just the file name
@@ -27,20 +28,21 @@ target overruns back to warnings; hard limits fail in both modes.
 Exit code: 0 = pass, 1 = fail (reasons on stderr)
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 # Budget constants
 INDEX_TARGET, INDEX_HARD = 60, 80
-# 인덱스 파일명과 룰 디렉터리명. --index / --docs-dir 로 덮어쓴다.
-# (개인 룰 세트는 CLAUDE.local.md + docs_local/ 처럼 다른 이름을 쓴다)
-INDEX_NAME = 'CLAUDE.md'
+# 정본과 룰 디렉터리, 런타임 진입점. 개인 룰은 CLI 옵션으로 이름만 바꾼다.
+INDEX_NAME = 'AI_RULES.md'
 DOCS_DIRNAME = 'docs'
+ENTRY_NAMES = ('CLAUDE.md', 'AGENTS.md')
 DOC_TARGET, DOC_HARD = 150, 190
 TASK_TARGET, TASK_HARD = 80, 100
 CORE_RULES_MAX = 10
-AGENTS_MAX_LINES = 15
+ENTRY_MAX_LINES = 15
 
 REQUIRED_DOCS = ('ARCHITECTURE.md', 'CODING_RULES.md', 'PITFALLS.md')
 
@@ -180,8 +182,8 @@ def checkRuleFormat(path, errors):
 
 
 # Core Rules section must stay within its bullet budget
-def checkCoreRules(claudeMd, errors):
-    lines = stripCode(claudeMd.read_text(encoding='utf-8')).splitlines()
+def checkCoreRules(indexMd, errors):
+    lines = stripCode(indexMd.read_text(encoding='utf-8')).splitlines()
     start = None
     for index, line in enumerate(lines):
         if HEADING_RE.match(line) and 'core rules' in line.lower():
@@ -204,8 +206,8 @@ def checkCoreRules(claudeMd, errors):
 
 
 # Routing rows must carry a trigger that says more than the file name
-def checkRoutingTable(claudeMd, errors):
-    lines = claudeMd.read_text(encoding='utf-8').splitlines()
+def checkRoutingTable(indexMd, errors):
+    lines = indexMd.read_text(encoding='utf-8').splitlines()
     rows = 0
     for lineNo, line in enumerate(lines, 1):
         if not line.strip().startswith('|'):
@@ -235,6 +237,44 @@ def checkRoutingTable(claudeMd, errors):
         errors.append(f'{INDEX_NAME}: no routing table rows link a docs file')
 
 
+# 런타임 진입점은 모두 같은 방식이어야 한다: 상대 심링크 또는 짧은 포인터.
+def checkEntryPoints(root, errors):
+    modes = []
+    indexPath = root / INDEX_NAME
+    for name in ENTRY_NAMES:
+        entry = root / name
+        if entry.is_symlink():
+            modes.append('symlink')
+            target = os.readlink(entry)
+            if Path(target).is_absolute():
+                errors.append(f'{name}: symlink target must be relative: {target}')
+                continue
+            if not entry.is_file():
+                errors.append(f'{name}: broken symlink: {target}')
+                continue
+            try:
+                matchesIndex = entry.resolve() == indexPath.resolve()
+            except (OSError, RuntimeError):
+                matchesIndex = False
+            if not matchesIndex:
+                errors.append(f'{name}: symlink must target {INDEX_NAME}, got {target}')
+            continue
+        if entry.is_file():
+            modes.append('pointer')
+            text = entry.read_text(encoding='utf-8')
+            if INDEX_NAME not in text:
+                errors.append(f'{name}: portable pointer does not reference {INDEX_NAME}')
+            if lineCount(entry) > ENTRY_MAX_LINES:
+                errors.append(f'{name}: portable pointer exceeds {ENTRY_MAX_LINES} lines')
+            continue
+        modes.append('missing')
+        errors.append(f'{name}: runtime entry not found')
+    presentModes = {mode for mode in modes if mode != 'missing'}
+    if len(presentModes) > 1:
+        errors.append('runtime entries mix symlink and pointer modes')
+    return next(iter(presentModes), 'missing')
+
+
 def parseNamedOption(argv, flag, default):
     """--flag value 또는 --flag=value 를 읽고 소비한 토큰을 argv 에서 뺀다."""
     for index, token in enumerate(argv):
@@ -250,43 +290,51 @@ def parseNamedOption(argv, flag, default):
 
 
 def main():
-    global INDEX_NAME, DOCS_DIRNAME, LINK_RE
+    global INDEX_NAME, DOCS_DIRNAME, ENTRY_NAMES, LINK_RE
     argv = [a for a in sys.argv[1:]]
     INDEX_NAME = parseNamedOption(argv, '--index', INDEX_NAME)
     DOCS_DIRNAME = parseNamedOption(argv, '--docs-dir', DOCS_DIRNAME)
+    entries = parseNamedOption(argv, '--entries', ','.join(ENTRY_NAMES))
+    ENTRY_NAMES = tuple(name.strip() for name in entries.split(',') if name.strip())
     # 룰 디렉터리명이 바뀌면 링크 정규식도 따라가야 한다 — 안 그러면 링크를 하나도 못 잡아
     # 모든 문서가 "링크 안 됨"으로 오판된다
     LINK_RE = re.compile(rf'\[[^\]]*\]\(({re.escape(DOCS_DIRNAME)}/[^)]+\.md)\)')
     strict = '--lenient' not in argv
     asJson = '--json' in argv
     positional = [a for a in argv if not a.startswith('--')]
-    if len(positional) != 1:
+    validEntries = (ENTRY_NAMES and len(set(ENTRY_NAMES)) == len(ENTRY_NAMES)
+                    and all(not Path(name).is_absolute() and Path(name).parent == Path('.')
+                            for name in ENTRY_NAMES))
+    if len(positional) != 1 or not validEntries:
         print(
             'usage: verify_rules.py <project-root> [--lenient] [--json] '
-            '[--index CLAUDE.md] [--docs-dir docs]',
+            '[--index AI_RULES.md] [--docs-dir docs] '
+            '[--entries CLAUDE.md,AGENTS.md]',
             file=sys.stderr,
         )
         return 1
     root = Path(positional[0])
-    claudeMd = root / INDEX_NAME
+    indexMd = root / INDEX_NAME
     docsDir = root / DOCS_DIRNAME
     errors, warnings = [], []
 
-    # 1. CLAUDE.md exists + budget
-    if not claudeMd.is_file():
-        print(f'FAIL: {claudeMd} not found', file=sys.stderr)
+    # 1. 중립 정본이 있어야 두 런타임 진입점이 같은 규칙을 읽는다.
+    if not indexMd.is_file():
+        print(f'FAIL: {indexMd} not found', file=sys.stderr)
         return 1
+    if indexMd.is_symlink():
+        errors.append(f'{INDEX_NAME}: neutral index must be a regular file, not a symlink')
 
-    claudeText = claudeMd.read_text(encoding='utf-8')
-    linkTargets = set(ANY_LINK_RE.findall(claudeText))
-    checkBudget(claudeMd, INDEX_TARGET, INDEX_HARD, errors, warnings, strict)
-    checkPlaceholders(claudeMd, errors)
-    checkCitations(claudeMd, root, errors, linkTargets)
-    checkCoreRules(claudeMd, errors)
-    checkRoutingTable(claudeMd, errors)
+    indexText = indexMd.read_text(encoding='utf-8')
+    linkTargets = set(ANY_LINK_RE.findall(indexText))
+    checkBudget(indexMd, INDEX_TARGET, INDEX_HARD, errors, warnings, strict)
+    checkPlaceholders(indexMd, errors)
+    checkCitations(indexMd, root, errors, linkTargets)
+    checkCoreRules(indexMd, errors)
+    checkRoutingTable(indexMd, errors)
 
-    # 2. collect the docs CLAUDE.md links
-    linked = set(LINK_RE.findall(claudeText))
+    # 2. 정본이 라우팅하는 상세 룰을 수집한다.
+    linked = set(LINK_RE.findall(indexText))
 
     # 3. link targets exist + UPPERCASE naming + per-file checks
     for rel in sorted(linked):
@@ -327,23 +375,15 @@ def main():
             else:
                 errors.append(f'generated doc not linked in {INDEX_NAME}: {relPath}')
 
-    # 6. AGENTS.md pointer — exists, references CLAUDE.md, is not a content copy
-    agentsMd = root / 'AGENTS.md'
-    if not agentsMd.is_file():
-        errors.append('AGENTS.md pointer not found')
-    else:
-        agentsText = agentsMd.read_text(encoding='utf-8')
-        if INDEX_NAME not in agentsText:
-            errors.append(f'AGENTS.md does not reference {INDEX_NAME}')
-        # a pointer must stay short — copying rule bodies causes drift
-        if lineCount(agentsMd) > AGENTS_MAX_LINES:
-            errors.append('AGENTS.md too long — should be a pointer, not a rule copy')
+    # 6. 런타임별 파일은 정본으로 모이는 진입점일 뿐, 별도 룰 사본이 아니다.
+    entryMode = checkEntryPoints(root, errors)
 
     # print results
     if asJson:
         print(json.dumps({
             'pass': not errors,
             'strict': strict,
+            'entryMode': entryMode,
             'docs': sorted(linked),
             'errors': errors,
             'warnings': warnings,

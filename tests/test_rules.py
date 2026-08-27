@@ -7,6 +7,7 @@ One known-good fixture is copied per case and mutated to break exactly one
 contract, so every check has a test that fails when the check stops working.
 No framework, no fixtures directory magic — copy, mutate, run, assert.
 """
+import hashlib
 import json
 import os
 import re
@@ -48,7 +49,7 @@ class Fixture:
     def __init__(self):
         self.tmp = tempfile.mkdtemp(prefix='rule-architect-test-')
         self.root = Path(self.tmp) / 'project'
-        shutil.copytree(GOOD, self.root)
+        shutil.copytree(GOOD, self.root, symlinks=True)
 
     def path(self, rel):
         return self.root / rel
@@ -89,22 +90,22 @@ def verifyCases():
          needle='required doc missing')
 
     case('required doc present but unlinked fails',
-         lambda f: f.edit('CLAUDE.md',
+         lambda f: f.edit('AI_RULES.md',
                           '| an error or surprising behavior appears | [docs/PITFALLS.md](docs/PITFALLS.md) |\n',
                           ''),
          needle='required doc not linked')
 
     case('Core Rules over budget fails',
-         lambda f: f.edit('CLAUDE.md', '- **[PREFER]** one collector module per upstream source',
+         lambda f: f.edit('AI_RULES.md', '- **[PREFER]** one collector module per upstream source',
                           '\n'.join(f'- **[PREFER]** filler rule {n}' for n in range(11))),
          needle='Core Rules has')
 
     case('routing trigger repeating the file name fails',
-         lambda f: f.edit('CLAUDE.md', '| reading the directory map or stack |', '| ARCHITECTURE |'),
+         lambda f: f.edit('AI_RULES.md', '| reading the directory map or stack |', '| ARCHITECTURE |'),
          needle='repeats the file name')
 
     case('empty routing trigger fails',
-         lambda f: f.edit('CLAUDE.md', '| reading the directory map or stack |', '|  |'),
+         lambda f: f.edit('AI_RULES.md', '| reading the directory map or stack |', '|  |'),
          needle='empty trigger')
 
     case('graded rule without why fails',
@@ -160,11 +161,76 @@ def verifyCases():
 
     case('missing AGENTS.md fails',
          lambda f: f.path('AGENTS.md').unlink(),
-         needle='AGENTS.md pointer not found')
+         needle='AGENTS.md: runtime entry not found')
 
-    case('AGENTS.md that copies rules fails',
-         lambda f: f.append('AGENTS.md', '\n'.join(f'line {n}' for n in range(20))),
-         needle='too long')
+    # 깨진 런타임 링크를 만든다.
+    def breakAgentsLink(fixture):
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('AGENTS.md').symlink_to('MISSING_RULES.md')
+
+    case('broken runtime symlink fails', breakAgentsLink, needle='broken symlink')
+
+    # 두 진입점을 휴대 가능한 일반 포인터로 바꾼다.
+    def usePortablePointers(fixture):
+        for name in ('CLAUDE.md', 'AGENTS.md'):
+            fixture.path(name).unlink()
+            fixture.path(name).write_text(
+                '# Project AI Rules\n\nRead [AI_RULES.md](AI_RULES.md) first.\n',
+                encoding='utf-8')
+
+    case('portable pointer fallback passes', usePortablePointers, expectFail=False)
+
+    # 심링크와 일반 포인터가 섞인 잘못된 상태를 만든다.
+    def mixEntryModes(fixture):
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('AGENTS.md').write_text(
+            '# Project AI Rules\n\nRead [AI_RULES.md](AI_RULES.md) first.\n',
+            encoding='utf-8')
+
+    case('mixed runtime entry modes fail', mixEntryModes, needle='mix symlink and pointer')
+
+    # 진입점 하나를 다른 문서로 잘못 연결한다.
+    def pointAtWrongIndex(fixture):
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('AGENTS.md').symlink_to('docs/ARCHITECTURE.md')
+
+    case('runtime symlink to the wrong file fails', pointAtWrongIndex,
+         needle='must target AI_RULES.md')
+
+    # 중립 정본 자체가 심링크인 금지 상태를 만든다.
+    def linkTheNeutralIndex(fixture):
+        fixture.path('AI_RULES_SOURCE.md').write_text(
+            fixture.path('AI_RULES.md').read_text(encoding='utf-8'), encoding='utf-8')
+        fixture.path('AI_RULES.md').unlink()
+        fixture.path('AI_RULES.md').symlink_to('AI_RULES_SOURCE.md')
+
+    case('neutral index itself cannot be a symlink', linkTheNeutralIndex,
+         needle='neutral index must be a regular file')
+
+    # 휴대용 포인터의 줄 수 제한을 넘긴다.
+    def useLongPortablePointers(fixture):
+        usePortablePointers(fixture)
+        fixture.path('AGENTS.md').write_text(
+            'AI_RULES.md\n' + '\n'.join(f'line {n}' for n in range(16)), encoding='utf-8')
+
+    case('portable pointer over line budget fails', useLongPortablePointers,
+         needle='portable pointer exceeds')
+
+    # 개인 룰용 정본·진입점·문서 디렉터리 옵션을 구성한다.
+    def usePersonalLayout(fixture):
+        fixture.path('AI_RULES.md').rename(fixture.path('AI_RULES.local.md'))
+        fixture.path('docs').rename(fixture.path('docs_local'))
+        fixture.path('CLAUDE.md').unlink()
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('CLAUDE.local.md').symlink_to('AI_RULES.local.md')
+        fixture.path('AGENTS.md').symlink_to('AI_RULES.local.md')
+        indexPath = fixture.path('AI_RULES.local.md')
+        indexPath.write_text(indexPath.read_text(encoding='utf-8').replace(
+            'docs/', 'docs_local/'), encoding='utf-8')
+
+    case('custom personal layout passes', usePersonalLayout, expectFail=False,
+         extraArgs=('--index', 'AI_RULES.local.md', '--docs-dir', 'docs_local',
+                    '--entries', 'CLAUDE.local.md,AGENTS.md'))
 
     # over the 150-line target but under the 190-line hard limit
     filler = '\n'.join(f'- filler line {n}' for n in range(160))
@@ -188,7 +254,7 @@ def verifyCases():
 
     def addUnlinkedDocWithManifest(fixture):
         addUnlinkedDoc(fixture)
-        run(MANIFEST, 'record', fixture.root, 'CLAUDE.md')
+        run(MANIFEST, 'record', fixture.root, 'AI_RULES.md')
 
     case('unlinked hand-written doc only warns when a manifest exists',
          addUnlinkedDocWithManifest, expectFail=False)
@@ -205,35 +271,65 @@ def verifyCases():
 
 
 def manifestCases():
+    legacy = Fixture()
+    try:
+        legacy.path('CLAUDE.md').unlink()
+        legacy.path('CLAUDE.md').write_text(
+            legacy.path('AI_RULES.md').read_text(encoding='utf-8'), encoding='utf-8')
+        digest = hashlib.sha256(legacy.path('CLAUDE.md').read_bytes()).hexdigest()
+        manifestPath = legacy.path('.rule-architect/manifest.json')
+        manifestPath.parent.mkdir(parents=True)
+        manifestPath.write_text(json.dumps({
+            'schema': 'rule-architect/manifest@1',
+            'files': {'CLAUDE.md': {'sha256': digest, 'lines': 1}},
+        }), encoding='utf-8')
+        code, out = run(MANIFEST, 'check', legacy.root)
+        check('schema 1 regular-file manifests remain readable',
+              code == 0 and 'CLEAN' in out, out[:160])
+    finally:
+        legacy.cleanup()
+
     fixture = Fixture()
     try:
         code, out = run(MANIFEST, 'check', fixture.root)
         check('manifest check reports legacy without a manifest', code == 2 and 'LEGACY' in out, out[:160])
 
-        code, out = run(MANIFEST, 'record', fixture.root, 'CLAUDE.md', 'docs/CODING_RULES.md')
+        code, out = run(MANIFEST, 'record', fixture.root, 'AI_RULES.md',
+                        'CLAUDE.md', 'AGENTS.md', 'docs/CODING_RULES.md')
         check('manifest record writes the file', code == 0 and (
             fixture.path('.rule-architect/manifest.json')).is_file(), out[:160])
 
         code, out = run(MANIFEST, 'check', fixture.root)
         check('manifest check is clean right after record', code == 0 and 'CLEAN' in out, out[:160])
 
-        fixture.append('CLAUDE.md', '\n- hand-added rule\n')
+        fixture.append('AI_RULES.md', '\n- hand-added rule\n')
         code, out = run(MANIFEST, 'check', fixture.root)
         check('hand edit is reported as a conflict, not overwritten',
-              code == 1 and 'modified' in out and 'CLAUDE.md' in out, out[:160])
+              code == 1 and 'modified' in out and 'AI_RULES.md' in out, out[:160])
 
         # recording a second file must not erase the first one's hash
-        code, out = run(MANIFEST, 'record', fixture.root, 'AGENTS.md')
+        code, out = run(MANIFEST, 'record', fixture.root, 'docs/ARCHITECTURE.md')
         payload = json.loads(fixture.path('.rule-architect/manifest.json').read_text(encoding='utf-8'))
         check('partial record merges instead of wiping earlier hashes',
               code == 0 and set(payload['files']) == {
-                  'CLAUDE.md', 'docs/CODING_RULES.md', 'AGENTS.md'}, out[:160])
+                  'AI_RULES.md', 'CLAUDE.md', 'AGENTS.md',
+                  'docs/CODING_RULES.md', 'docs/ARCHITECTURE.md'}, out[:160])
 
         code, out = run(MANIFEST, 'record', fixture.root, 'AGENTS.md', '--replace')
         payload = json.loads(fixture.path('.rule-architect/manifest.json').read_text(encoding='utf-8'))
-        check('--replace records only the listed files',
-              code == 0 and set(payload['files']) == {'AGENTS.md'}, out[:160])
-        run(MANIFEST, 'record', fixture.root, 'CLAUDE.md', 'docs/CODING_RULES.md')
+        check('--replace records a symlink target instead of duplicated contents',
+              code == 0 and payload['files'] == {
+                  'AGENTS.md': {'type': 'symlink', 'target': 'AI_RULES.md'}}, out[:160])
+        run(MANIFEST, 'record', fixture.root, 'AI_RULES.md', 'CLAUDE.md', 'AGENTS.md',
+            'docs/CODING_RULES.md')
+
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('AGENTS.md').write_text('AI_RULES.md\n', encoding='utf-8')
+        code, out = run(MANIFEST, 'check', fixture.root)
+        check('a symlink replaced by a regular file is modified',
+              code == 1 and 'AGENTS.md' in out and 'modified' in out, out[:160])
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('AGENTS.md').symlink_to('AI_RULES.md')
 
         fixture.path('docs/CODING_RULES.md').unlink()
         code, out = run(MANIFEST, 'check', fixture.root, '--json')
@@ -252,10 +348,23 @@ def quizCases():
         code, out = run(QUIZ, 'scaffold', fixture.root, '--lang', 'en', '--run-id', 't1')
         payload = json.loads(out)
         check('quiz scaffold lists only rule files',
-              code == 0 and 'CLAUDE.md' in payload['ruleFiles']
+              code == 0 and 'AI_RULES.md' in payload['ruleFiles']
+              and 'CLAUDE.md' not in payload['ruleFiles']
+              and 'AGENTS.md' not in payload['ruleFiles']
               and all(f.endswith('.md') for f in payload['ruleFiles']), out[:160])
         check('quiz scaffold states the required mix',
               payload['requiredMix'] == {'recall': 3, 'judgment': 1, 'negative': 1}, out[:160])
+
+        fixture.path('AI_RULES.local.md').write_text(
+            fixture.path('AI_RULES.md').read_text(encoding='utf-8'), encoding='utf-8')
+        shutil.copytree(fixture.path('docs'), fixture.path('docs_local'))
+        code, out = run(QUIZ, 'scaffold', fixture.root, '--lang', 'ko', '--run-id', 'local',
+                        '--index', 'AI_RULES.local.md', '--docs-dir', 'docs_local')
+        custom = json.loads(out)
+        check('quiz scaffold supports a custom neutral layout',
+              code == 0 and 'AI_RULES.local.md' in custom['ruleFiles']
+              and any(name.startswith('docs_local/') for name in custom['ruleFiles'])
+              and 'AI_RULES.local.md' in custom['isolationPrompt'], out[:160])
 
         def results(runId, correctFlags,
                     types=('recall', 'recall', 'recall', 'judgment', 'negative')):
@@ -340,6 +449,9 @@ def scanCases():
               any(d['doc'] == 'DEPLOY.md' and d['met'] for d in payload['decisions']), out[:160])
         check('scan detects python as the stack',
               payload['stack'] and payload['stack'][0]['stack'] == 'python', out[:160])
+        check('scan reports the neutral rule file and healthy runtime links',
+              payload['existingRuleFiles'] == ['AGENTS.md', 'AI_RULES.md', 'CLAUDE.md']
+              and payload['brokenRuleLinks'] == [], out[:160])
 
         code, second = run(SCAN, fixture.root)
         check('scan output is byte-identical across runs', out == second, 'differs')
@@ -348,6 +460,13 @@ def scanCases():
         payload = json.loads(out)
         check('scan flags truncation when the file cap is hit',
               payload['truncated']['files'] is True, out[:160])
+
+        fixture.path('AGENTS.md').unlink()
+        fixture.path('AGENTS.md').symlink_to('MISSING_RULES.md')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('scan exposes a broken runtime link',
+              code == 0 and payload['brokenRuleLinks'] == ['AGENTS.md'], out[:160])
     finally:
         fixture.cleanup()
 

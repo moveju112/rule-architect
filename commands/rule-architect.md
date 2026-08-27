@@ -1,5 +1,5 @@
 ---
-description: Generate or update an advanced AI rule set (CLAUDE.md + docs/*.md) for a project
+description: Generate or update a runtime-neutral AI rule set (AI_RULES.md + docs/*.md)
 argument-hint: "[project-path] [--update]"
 ---
 
@@ -10,10 +10,11 @@ Target: $ARGUMENTS (default: current working directory).
 Follow the skill's SKILL.md exactly:
 
 1. `scan.py` for the signal manifest — it decides the conditional doc set, and its
-   `truncated` flags say whether the scan was complete.
+   `truncated` flags say whether the scan was complete. Stop if `brokenRuleLinks`
+   is non-empty.
 2. On an existing rule set, `manifest.py check` BEFORE editing. Exit 1 is a conflict:
    stop and report, never overwrite a hand-edited file. Exit 2 means legacy — add only.
-3. Write docs, then CLAUDE.md, then the AGENTS.md pointer.
+3. Write docs, then AI_RULES.md, then both runtime entry files in one mode.
 4. `manifest.py record` every file written.
 5. Both gates: `verify_rules.py` (strict — do not reach for `--lenient` to get a green
    run) and the quiz via `quiz.py scaffold` → isolated subagent → `quiz.py grade`.

@@ -7,9 +7,10 @@
 npx skills add moveju112/rule-architect -g
 ```
 
-A Claude Code skill that generates a production-grade AI rule set for a project:
-one slim `CLAUDE.md` index, an `AGENTS.md` pointer, and on-demand `docs/*.md`
-rule files — all verified by a script and a quiz test before it calls itself done.
+An agent skill that generates a production-grade, runtime-neutral rule set for a
+project: one slim `AI_RULES.md` index, runtime entry files that resolve to it, and
+on-demand `docs/*.md` rule files — all verified by a script and a quiz test before
+it calls itself done.
 
 Works in **English and Korean**. Triggers are registered in both languages, and
 the generated rules follow the project's existing docs language (or yours, if the
@@ -29,7 +30,7 @@ project has none).
 | **Codex CLI / GPT** | GPT-5 flagship tier | **GPT-5 Codex + reasoning `high`** | `mini` · `nano` tiers |
 
 **Never run `--update` at the minimum tier.** Use Opus 5 / Fable 5 on Claude, or a
-flagship tier on GPT. And **commit your existing CLAUDE.md first** — that way a bad
+flagship tier on GPT. And **commit your existing rule files first** — that way a bad
 run is one `git checkout` away from undone.
 
 Model-independent: `scripts/verify_rules.py`. Line budgets, link integrity, and
@@ -39,9 +40,11 @@ citation-freshness checks are deterministic, so the model tier does not affect t
 
 ## What it generates
 
-- **CLAUDE.md** (≤60 lines) — the always-loaded slim index: Core Rules + run commands + a **Routing table**.
+- **AI_RULES.md** (≤60 lines) — the runtime-neutral slim index: Core Rules + run commands + a **Routing table**.
   - The Routing table maps **"situation/task → file to read"**, not "topic → file". Rows without a concrete trigger are rejected.
-- **AGENTS.md** — a pointer for Codex CLI and other non-Claude agents. It points at CLAUDE.md and never copies rule content (copies drift).
+- **CLAUDE.md + AGENTS.md** — relative symlinks to `AI_RULES.md` on Linux/WSL/POSIX projects.
+  - Repositories that must work without symlink support receive two short regular-file pointers instead.
+  - Both entries use the same mode; neither contains rule bodies or points at the other.
 - **docs/*.md** (≤150 lines each) — topic rule docs, loaded only when the topic comes up.
   - Always: `ARCHITECTURE.md`, `CODING_RULES.md`, `PITFALLS.md`
   - Conditional: `CONTROLLER_RULES.md`, `ENUM_CODES.md`, `RESPONSE_KEYS.md`, `DB_RULES.md`, `DEPLOY.md`
@@ -75,7 +78,7 @@ those are rules.
 
 The rule set is written in one language per run, chosen in this order:
 
-1. The project's existing `CLAUDE.md` / `docs/*.md` / `README` language.
+1. The project's existing `AI_RULES.md` / legacy rule index / `docs/*.md` / `README` language.
 2. The language you are writing in.
 3. English.
 
@@ -131,7 +134,7 @@ Natural language, either language:
 | English | Korean |
 |---|---|
 | "make rules for this project" | "이 프로젝트 룰 만들어줘" |
-| "generate CLAUDE.md" | "CLAUDE.md 만들어" |
+| "generate AI rules" | "AI 룰 만들어" |
 | "upgrade the project rules" | "프로젝트 룰 고도화해줘" |
 
 ## Verification
@@ -144,7 +147,8 @@ overruns to warnings; hard limits fail either way. It checks:
 
 - bidirectional link integrity, and that `ARCHITECTURE.md`, `CODING_RULES.md`,
   and `PITFALLS.md` exist and are linked
-- line budgets: CLAUDE.md ≤60 (hard 80), docs ≤150 (hard 190), playbooks ≤80 (hard 100)
+- line budgets: AI_RULES.md ≤60 (hard 80), docs ≤150 (hard 190), playbooks ≤80 (hard 100)
+- both runtime entries are valid relative symlinks to `AI_RULES.md`, or both are portable pointers
 - Core Rules ≤10 bullets, and routing rows whose trigger is neither empty nor a
   restatement of the file name
 - every graded rule carries a `why:` line and a ✅ example
@@ -155,7 +159,7 @@ overruns to warnings; hard limits fail either way. It checks:
   citations; bare naming patterns like `UPPERCASE.md` do not.
 
 **Quiz test** — the content gate. A fresh subagent answers 5 questions given ONLY
-the generated rules, with no source access:
+`AI_RULES.md` once and the generated docs, with no source access:
 
 - **3 recall** — "Where does a new model have to be registered?"
 - **1 judgment** — "I want to do X; is approach Y allowed?" (measures application, not recall)
@@ -170,9 +174,10 @@ does not count.
 
 ## Update safety
 
-`scripts/manifest.py` records a SHA-256 per generated file, merging into whatever
-the manifest already holds (`--replace` records a complete set instead). Before an
-update run, `manifest.py check` compares the working tree against those hashes:
+`scripts/manifest.py` records a SHA-256 for each generated regular file and records
+the type and target for each runtime symlink. It merges into the existing manifest
+(`--replace` records a complete set instead). Before an update run,
+`manifest.py check` compares the working tree against those records:
 
 | Exit | Meaning | Policy |
 |---|---|---|
@@ -180,15 +185,17 @@ update run, `manifest.py check` compares the working tree against those hashes:
 | 1 | a file was hand-edited, or is missing | **conflict — never overwrite**, report and ask |
 | 2 | no manifest (legacy project) | treat every rule file as hand-written; add only |
 
-This is what replaces "commit your CLAUDE.md first and hope". The old single marker
-at the bottom of CLAUDE.md could not tell a hand-written rule from a stale generated
+This is what replaces "commit your rule index first and hope". The old single marker
+at the bottom of a rule index could not tell a hand-written rule from a stale generated
 one; a per-file hash can, and the policy on ambiguity is to stop rather than guess.
 
 ## Reproducibility
 
 `scripts/scan.py <root>` prints a JSON manifest of the measured signals — stack,
 layer directories, enum-defining files, deploy artifacts, git co-change groups —
-and the conditional-doc `decisions` derived from them, each with its evidence.
+the conditional-doc `decisions` derived from them, each with its evidence. It also
+reports `brokenRuleLinks`, which blocks an update before a damaged entry is mistaken
+for a new project.
 Same commit in, same manifest out. Git history is scoped to the project directory,
 so a project nested inside a larger repository does not inherit that repository's
 commits.

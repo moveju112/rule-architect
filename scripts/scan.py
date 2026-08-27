@@ -267,8 +267,12 @@ def main():
     deploy = detectDeploy(files, root)
     coChange = detectCoChange(root, args.max_commits)
 
-    existing = sorted(name for name in ('CLAUDE.md', 'AGENTS.md', '.cursorrules')
-                      if (root / name).is_file())
+    ruleNames = ('AI_RULES.md', 'CLAUDE.md', 'AGENTS.md', '.cursorrules')
+    existing = sorted(name for name in ruleNames
+                      if (root / name).is_file() or (root / name).is_symlink())
+    # 깨진 진입점은 기존 룰 없음으로 숨기지 않고 업데이트 차단 신호로 드러낸다.
+    brokenRuleLinks = sorted(name for name in ruleNames
+                             if (root / name).is_symlink() and not (root / name).is_file())
 
     manifest = {
         'schema': 'rule-architect/scan@1',
@@ -284,6 +288,7 @@ def main():
         'deployFiles': deploy,
         'coChange': coChange,
         'existingRuleFiles': existing,
+        'brokenRuleLinks': brokenRuleLinks,
         'decisions': decideDocs(layers, enums, deploy, coChange),
     }
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
