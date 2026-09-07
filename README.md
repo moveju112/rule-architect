@@ -126,7 +126,7 @@ skill still fires on natural-language triggers.
 
 ```
 /rule-architect [project-path]
-/rule-architect [project-path] --update   # diff-update an existing rule set
+/rule-architect [project-path] --update   # migrate legacy entries to AI_RULES.md, then diff-update
 ```
 
 Natural language, either language:
@@ -183,11 +183,17 @@ the type and target for each runtime symlink. It merges into the existing manife
 |---|---|---|
 | 0 | generated files unchanged | safe to regenerate |
 | 1 | a file was hand-edited, or is missing | **conflict — never overwrite**, report and ask |
-| 2 | no manifest (legacy project) | treat every rule file as hand-written; add only |
+| 2 | no manifest (legacy project) | preserve one identifiable source body while migrating it to `AI_RULES.md`; stop if sources diverge |
 
 This is what replaces "commit your rule index first and hope". The old single marker
 at the bottom of a rule index could not tell a hand-written rule from a stale generated
 one; a per-file hash can, and the policy on ambiguity is to stop rather than guess.
+
+Calling `--update` authorizes the structural migration itself. A legacy index body in
+`CLAUDE.md`, `CLAUDE.local.md`, or another recognized loader moves unchanged to the normal
+file `AI_RULES.md`; both runtime entries then point directly to it in one mode. The update
+must not finish with the legacy body still stored in a runtime-owned entry. This does not
+weaken exit-1 conflict protection or permit choosing between different rule bodies.
 
 ## Reproducibility
 

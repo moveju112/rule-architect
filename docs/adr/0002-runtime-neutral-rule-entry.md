@@ -1,7 +1,7 @@
 # ADR 0002 — Use a runtime-neutral rule source
 
 Date: 2026-08-27
-Status: accepted
+Status: superseded by ADR 0003
 
 ## Context
 
