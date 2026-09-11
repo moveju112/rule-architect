@@ -3,7 +3,7 @@
 
 Usage:
   python3 manifest.py record <project-root> <file> [<file> ...]
-  python3 manifest.py check  <project-root> [--json]
+  python3 manifest.py check  <project-root> [--docs-dir docs] [--json]
 
 `record` stores a hash of every file the generator wrote, merging into whatever the
 manifest already holds; pass `--replace` to record a complete set and drop the rest.
@@ -21,7 +21,8 @@ rather than guess:
   untracked — an UPPERCASE doc nobody recorded. Treat as hand-written.
 
 Exit codes: 0 = clean, 1 = conflict (modified or missing), 2 = legacy project
-(no manifest — treat every existing rule file as hand-written and only add).
+(no manifest — preserve one identifiable source body for structural migration;
+stop when the source is ambiguous).
 """
 import argparse
 import hashlib
@@ -31,7 +32,7 @@ import sys
 from pathlib import Path
 
 MANIFEST_REL = Path('.rule-architect') / 'manifest.json'
-SCHEMA = 'rule-architect/manifest@2'
+SCHEMA = 'rule-architect/manifest@3'
 
 
 # sha256 of a file's bytes; None when the file is gone
@@ -71,6 +72,18 @@ def loadManifest(root):
     return data if isinstance(data.get('files'), dict) else None
 
 
+# 마지막 심링크는 보존하면서 프로젝트 내부 경로만 정규화한다.
+def scopedPath(root, raw):
+    path = Path(raw)
+    candidate = path if path.is_absolute() else root / path
+    try:
+        resolved = candidate.parent.resolve() / candidate.name
+        rel = resolved.relative_to(root).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return None, None
+    return resolved, rel
+
+
 # Record the hash of every file this run generated.
 # Merges into any existing manifest by default: an update run that rewrites two of
 # six files must not erase the hashes of the other four, or the next check would
@@ -79,13 +92,14 @@ def commandRecord(root, targets, replace=False):
     existing = loadManifest(root)
     files = {} if replace or existing is None else dict(existing['files'])
     for raw in targets:
-        path = Path(raw)
-        resolved = path if path.is_absolute() else root / path
+        resolved, rel = scopedPath(root, raw)
+        if resolved is None:
+            print(f'FAIL: cannot record a path outside the project: {raw}', file=sys.stderr)
+            return 1
         state = inspectPath(resolved)
         if state is None:
             print(f'FAIL: cannot record missing file: {raw}', file=sys.stderr)
             return 1
-        rel = resolved.relative_to(root).as_posix()
         files[rel] = state
     target = manifestPath(root)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,19 +112,23 @@ def commandRecord(root, targets, replace=False):
 
 
 # Compare the working tree against the recorded hashes
-def commandCheck(root, asJson):
+def commandCheck(root, asJson, docsDirname='docs'):
     data = loadManifest(root)
     if data is None:
         report = {'status': 'legacy', 'clean': [], 'modified': [], 'missing': [],
-                  'untracked': sorted(uppercaseDocs(root))}
+                  'untracked': sorted(uppercaseDocs(root, docsDirname))}
         emit(report, asJson,
-             'LEGACY: no manifest — treat every existing rule file as hand-written; add only')
+             'LEGACY: no manifest — preserve one identifiable source body for '
+             'migration; stop if sources diverge')
         return 2
 
     recorded = data['files']
     clean, modified, missing = [], [], []
     for rel, entry in sorted(recorded.items()):
-        path = root / rel
+        path, normalized = scopedPath(root, rel)
+        if path is None or normalized != rel:
+            modified.append(rel)
+            continue
         current = inspectPath(path)
         if current is None:
             missing.append(rel)
@@ -123,7 +141,7 @@ def commandCheck(root, asJson):
         else:
             modified.append(rel)
 
-    untracked = sorted(set(uppercaseDocs(root)) - set(recorded))
+    untracked = sorted(set(uppercaseDocs(root, docsDirname)) - set(recorded))
     report = {'status': 'conflict' if (modified or missing) else 'clean',
               'clean': clean, 'modified': modified, 'missing': missing,
               'untracked': untracked}
@@ -138,8 +156,8 @@ def commandCheck(root, asJson):
 
 
 # Every UPPERCASE doc in the project, generated or not
-def uppercaseDocs(root):
-    docsDir = root / 'docs'
+def uppercaseDocs(root, docsDirname='docs'):
+    docsDir = root / docsDirname
     if not docsDir.is_dir():
         return []
     return [doc.relative_to(root).as_posix() for doc in docsDir.rglob('*.md')
@@ -168,6 +186,7 @@ def main():
     checkParser = sub.add_parser('check')
     checkParser.add_argument('root')
     checkParser.add_argument('--json', action='store_true')
+    checkParser.add_argument('--docs-dir', default='docs')
 
     args = parser.parse_args()
     root = Path(args.root).resolve()
@@ -176,7 +195,7 @@ def main():
         return 1
     if args.command == 'record':
         return commandRecord(root, args.files, args.replace)
-    return commandCheck(root, args.json)
+    return commandCheck(root, args.json, args.docs_dir)
 
 
 if __name__ == '__main__':

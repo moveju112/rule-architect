@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "rule-architect",
-  "description": "Project AI rule-set generator — slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md",
+  "description": "Project AI rule-set generator — neutral AI_RULES.md index + runtime entries + on-demand docs/*.md",
   "owner": {
     "name": "moveju112"
   },
   "plugins": [
     {
       "name": "rule-architect",
-      "description": "Generate an advanced AI rule set for a project: slim CLAUDE.md index + AGENTS.md pointer + on-demand docs/*.md rule files, enforced by a strict contract checker, a deterministic signal scan, an update-safety manifest, an archived quiz gate, a session-transcript correction harvester, and an opt-in PreToolUse hook compiler. English and Korean triggers both work.",
+      "description": "Generate an advanced runtime-neutral AI rule set for a project: slim AI_RULES.md index + runtime entry pointers + on-demand docs/*.md, backed by tri-state signal decisions, Claude/Codex correction harvesting, update safety, strict verification, and an archived quiz gate. English and Korean triggers both work.",
       "source": "./"
     }
   ]

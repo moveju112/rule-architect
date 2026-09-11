@@ -48,7 +48,8 @@ citation-freshness checks are deterministic, so the model tier does not affect t
 - **docs/*.md** (≤150 lines each) — topic rule docs, loaded only when the topic comes up.
   - Always: `ARCHITECTURE.md`, `CODING_RULES.md`, `PITFALLS.md`
   - Conditional: `CONTROLLER_RULES.md`, `ENUM_CODES.md`, `RESPONSE_KEYS.md`, `DB_RULES.md`, `DEPLOY.md`
-- **docs/tasks/*.md** (≤80 lines each) — playbooks for recurring tasks: numbered steps, each citing `file:line` evidence.
+    (including detected deployment workflows under `.github/` or `.forgejo/`)
+- **docs/tasks/*.md** (≤80 lines each) — playbooks for recurring tasks: numbered steps, each citing backticked `evidence: file:line`.
   - Generated only for tasks where `git log` shows the same file set changed together ≥3 times (e.g. `ADD_API.md`, `ADD_MODEL.md`).
   - Cross-file couplings are recorded as playbook steps, not as standalone rules.
 
@@ -59,7 +60,7 @@ Every rule carries a grade, a reason, and a contrasting pair of examples.
 ```markdown
 - **[MUST|NEVER|PREFER]** <rule, one line>
   - why: <one line>
-  - ❌ <a real violation from THIS project — file:line or snippet>
+  - ❌ <a real violation from THIS project — `evidence: file:line` or snippet>
   - ✅ <the correct form — real project code>
 ```
 
@@ -153,10 +154,12 @@ overruns to warnings; hard limits fail either way. It checks:
   restatement of the file name
 - every graded rule carries a `why:` line and a ✅ example
 - placeholder scan, UPPERCASE naming
-- **citation freshness** — a cited `src/db.py:42` fails both when the file is gone
-  **and** when the file is shorter than 42 lines, which is how a rule that quietly
-  survived a refactor gets caught. `Dockerfile`, `Makefile`, and dotfiles count as
-  citations; bare naming patterns like `UPPERCASE.md` do not.
+- **conditional-doc closure** — a current generation requires a persisted scan-decision
+  record; unresolved/omitted decisions, selected-but-unlinked docs, and source changes
+  after the scan fail
+- **citation freshness** — prefer backticked `evidence: src/db.py:42`. Missing files and
+  lines past EOF fail. Existing implicit path citations remain compatible, while imports,
+  URIs, API routes, host:port values, and path templates are ignored as prose.
 
 **Quiz test** — the content gate. A fresh subagent answers 5 questions given ONLY
 `AI_RULES.md` once and the generated docs, with no source access:
@@ -194,45 +197,60 @@ Calling `--update` authorizes the structural migration itself. A legacy index bo
 file `AI_RULES.md`; both runtime entries then point directly to it in one mode. The update
 must not finish with the legacy body still stored in a runtime-owned entry. This does not
 weaken exit-1 conflict protection or permit choosing between different rule bodies.
+Current `manifest@3` records also require `.rule-architect/decisions.json`, so a run
+cannot pass after silently ignoring its own scan result. Include that decision file in
+`manifest.py record` with the generated rule files so later hand edits remain protected.
 
 ## Reproducibility
 
-`scripts/scan.py <root>` prints a JSON manifest of the measured signals — stack,
-layer directories, enum-defining files, deploy artifacts, git co-change groups —
-the conditional-doc `decisions` derived from them, each with its evidence. It also
+`scripts/scan.py <root> --output <temporary-scan.json>` prints and optionally persists a JSON
+manifest of measured signals — stack, layer directories, enum-defining files, actual
+response-serialization code, deploy artifacts, git co-change groups — and the
+conditional-doc decisions derived from them. Each decision is `met`, `not_met`, or
+`unknown` and carries evidence. It also
 reports `brokenRuleLinks`, which blocks an update before a damaged entry is mistaken
 for a new project.
 Same commit in, same manifest out. Git history is scoped to the project directory,
 so a project nested inside a larger repository does not inherit that repository's
 commits.
 
-Every traversal is bounded (`--max-files`, `--max-bytes`, `--max-commits`), vendor
-and build directories are skipped, and hitting a cap sets a `truncated` flag, so a
-partial scan can never be mistaken for a complete one.
+Every traversal is bounded (`--max-files`, `--max-bytes`, `--max-commits`); vendor,
+fixture, minified, and build code is excluded from rule signals. Hitting a cap turns
+unsupported negative decisions into `unknown`, so a partial scan cannot masquerade as
+a complete negative.
+
+`scripts/decisions.py init <root> --scan <temporary-scan.json>` turns those results
+into `.rule-architect/decisions.json`. Every `unknown` and every override needs a
+manual resolution and reason. `verify_rules.py` consumes the same record and checks
+that all six decisions exist, selected docs are routed, and no later source commit has
+invalidated the scan. Rule-only commits do not make the record stale.
 
 ## Harvested rules
 
 A repo scan knows what the project contains. It cannot know what the agent kept
-getting wrong in it. `scripts/harvest.py <root>` reads this project's past session
-transcripts and prints your own corrections — recency-ordered, credential-redacted,
-with a table of the terms that recur across different corrections. Corrections are
-the highest-yield rule source there is: someone already paid for each one.
+getting wrong in it. `scripts/harvest.py <root>` reads this project's local Claude
+Code and Codex session transcripts and prints your own corrections — recency-ordered,
+credential-redacted, deduplicated across runtimes, with per-source coverage and a table
+of terms recurring across different corrections. Structured cwd/tool paths attribute
+sessions started above the repo without accepting sibling-prefix projects or Codex subagent prompts.
+When `truncated.files` is true, increase `--max-files` before treating absence as evidence.
 
 The script only measures. A candidate is promoted to a rule only when it repeats
 (≥2 corrections), is recent, belongs to this project, and still agrees with the
-current code — then it cites `file:line` evidence like any other rule. Nothing from
+current code — then it cites `evidence: file:line` like any other rule. Nothing from
 the harvest lands in a rule file verbatim.
 
 ```bash
 python3 scripts/harvest.py <root> --days 180 --limit 60
 ```
 
-## Hook promotion
+## Hook promotion (Claude Code only)
 
 Rules a machine can enforce — forbidden calls, forbidden imports, banned paths — are
 **not** written into the docs. Prose depends on the agent having loaded and honoured
 it; a hook does not. They are listed in the final report as hook promotion
-candidates, and emitted only when you explicitly ask:
+candidates. The spec is runtime-neutral, but the bundled emitter/guard adapter targets
+Claude Code only and runs only when you explicitly ask:
 
 ```bash
 python3 scripts/hookgen.py emit <root> --rules spec.json            # spec + guard, prints the settings entry
@@ -266,7 +284,7 @@ python3 tests/test_rules.py   # clones the fixture per case, breaks one contract
 Layout:
 
 ```
-scripts/     scan.py, harvest.py, manifest.py, verify_rules.py, quiz.py,
+scripts/     scan.py, harvest.py, decisions.py, manifest.py, verify_rules.py, quiz.py,
              hookgen.py, rule_guard.py (copied into projects, not run here)
 tests/       test_rules.py + fixtures/good/ (a rule set that passes strict)
 docs/adr/    decisions and their consequences

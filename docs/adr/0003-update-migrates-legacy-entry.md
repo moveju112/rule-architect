@@ -3,6 +3,8 @@
 Date: 2026-09-07
 Status: accepted
 
+Amends: ADR 0002
+
 ## Context
 
 ADR 0002 established `AI_RULES.md` as the neutral source but required separate migration approval

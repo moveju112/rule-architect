@@ -21,6 +21,7 @@ Checks:
 10. Core Rules bullet count <= 10
 11. Routing table rows carry a non-empty trigger that is not just the file name
 12. graded rules (MUST/NEVER/PREFER) carry `why:` and a correct example
+13. current generated sets carry complete, resolved, fresh conditional-doc decisions
 
 Strict by default: exceeding a target budget fails. Pass --lenient to demote
 target overruns back to warnings; hard limits fail in both modes.
@@ -32,6 +33,11 @@ import os
 import re
 import sys
 from pathlib import Path
+
+# 다른 번들 스크립트를 가져와도 설치 디렉터리에 캐시 파일을 남기지 않는다.
+sys.dont_write_bytecode = True
+
+from decisions import validateDecisionRecord
 
 # Budget constants
 INDEX_TARGET, INDEX_HARD = 60, 80
@@ -57,6 +63,15 @@ HEADING_RE = re.compile(r'^#{1,6}\s')
 
 GIT_REF_PREFIXES = ('origin/', 'upstream/', 'refs/')
 GIT_REFS = {'HEAD', 'FETCH_HEAD', 'ORIG_HEAD'}
+URI_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://')
+HOST_PORT_RE = re.compile(r'^(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:]+\]):\d+$')
+PATH_SUFFIXES = {
+    '.c', '.cc', '.cpp', '.css', '.csv', '.dart', '.env', '.ex', '.exs', '.go',
+    '.gradle', '.h', '.hpp', '.html', '.java', '.js', '.json', '.jsx', '.kt',
+    '.kts', '.md', '.php', '.py', '.rb', '.rs', '.scala', '.sh', '.sql', '.swift',
+    '.toml', '.ts', '.tsx', '.vue', '.xml', '.yaml', '.yml',
+}
+ABSOLUTE_FILE_PREFIXES = ('/etc/', '/home/', '/opt/', '/proc/', '/tmp/', '/usr/', '/var/')
 
 # Extensionless build files that are still real path citations
 BARE_FILES = {
@@ -81,12 +96,9 @@ def checkBudget(path, target, hard, errors, warnings, strict):
     return lines
 
 
-# Decide whether a backticked string is a path citation at all.
-# A bare word with an extension (`UPPERCASE.md`, `lowercase.md`) is a naming
-# pattern far more often than a real file, so only these count as citations:
-# anything containing a slash, an explicit :line suffix, a known extensionless
-# build file, or a dotfile.
-def isCitation(raw, hasLine):
+# 백틱 문자열이 프로젝트 근거 경로인지 판별한다.
+# 명시적인 `evidence:` 표기와 실제 존재 경로를 우선하고, 기존 경로 표기도 호환한다.
+def isCitation(raw, hasLine, root=None, explicit=False):
     if not raw or any(ch.isspace() for ch in raw):
         return False
     if raw.startswith(('http://', 'https://', '<', '$')):
@@ -98,7 +110,19 @@ def isCitation(raw, hasLine):
         return False          # 홈 경로 — 프로젝트 루트 기준이 아니다
     if any(ch in raw for ch in '*?['):
         return False          # glob 패턴: docs_local/*.md
-    return '/' in raw or hasLine or raw in BARE_FILES or raw.startswith('.')
+    if not explicit and (URI_RE.match(raw) or HOST_PORT_RE.match(raw)):
+        return False
+    if not explicit and (raw.startswith('@/') or any(ch in raw for ch in '{}<>|=\'"')):
+        return False
+    if raw.startswith('/') and not explicit \
+            and not raw.startswith(ABSOLUTE_FILE_PREFIXES):
+        return False          # API route: /api/runs, /login
+    if root is not None and not raw.startswith('/') and (root / raw).exists():
+        return True
+    suffix = Path(raw).suffix.lower()
+    return (explicit or hasLine or raw in BARE_FILES or raw.startswith('.')
+            or raw.startswith(ABSOLUTE_FILE_PREFIXES) or raw.endswith('/')
+            or ('/' in raw and suffix in PATH_SUFFIXES))
 
 
 # Split `path:42` / `path:42-58` into a path and its line range
@@ -119,17 +143,28 @@ def checkCitations(path, root, errors, linkTargets):
         if raw in linkTargets or raw in seen:
             continue
         seen.add(raw)
-        target, start, end = splitCitation(raw)
-        if not isCitation(target, start is not None):
+        explicit = raw.lower().startswith('evidence:')
+        citation = raw.split(':', 1)[1].strip() if explicit else raw
+        if not explicit and (URI_RE.match(citation) or HOST_PORT_RE.match(citation)):
+            continue
+        target, start, end = splitCitation(citation)
+        if not isCitation(target, start is not None, root, explicit):
             continue
         if target.startswith('/'):
             errors.append(f'{path.name}: absolute path citation: {raw}')
+            continue
+        if '..' in Path(target).parts:
+            errors.append(f'{path.name}: citation escapes the project: {raw}')
             continue
         resolved = root / target
         # a trailing slash cites a directory, not a file
         if target.endswith('/'):
             if not resolved.is_dir():
                 errors.append(f'{path.name}: stale citation, directory not found: {raw}')
+            continue
+        if resolved.is_dir():
+            if start is not None:
+                errors.append(f'{path.name}: directory citation cannot carry a line: {raw}')
             continue
         if not resolved.is_file():
             errors.append(f'{path.name}: stale citation, file not found: {raw}')
@@ -375,7 +410,11 @@ def main():
             else:
                 errors.append(f'generated doc not linked in {INDEX_NAME}: {relPath}')
 
-    # 6. 런타임별 파일은 정본으로 모이는 진입점일 뿐, 별도 룰 사본이 아니다.
+    # 6. conditional-doc decisions must agree with the linked output when recorded.
+    decisionStatus = validateDecisionRecord(
+        root, linked, DOCS_DIRNAME, errors, warnings, INDEX_NAME, ENTRY_NAMES)
+
+    # 7. 런타임별 파일은 정본으로 모이는 진입점일 뿐, 별도 룰 사본이 아니다.
     entryMode = checkEntryPoints(root, errors)
 
     # print results
@@ -384,6 +423,7 @@ def main():
             'pass': not errors,
             'strict': strict,
             'entryMode': entryMode,
+            'decisionStatus': decisionStatus,
             'docs': sorted(linked),
             'errors': errors,
             'warnings': warnings,

@@ -24,6 +24,7 @@ MANIFEST = ROOT / 'scripts' / 'manifest.py'
 QUIZ = ROOT / 'scripts' / 'quiz.py'
 SCAN = ROOT / 'scripts' / 'scan.py'
 HARVEST = ROOT / 'scripts' / 'harvest.py'
+DECISIONS = ROOT / 'scripts' / 'decisions.py'
 HOOKGEN = ROOT / 'scripts' / 'hookgen.py'
 GUARD = ROOT / 'scripts' / 'rule_guard.py'
 
@@ -155,6 +156,28 @@ def verifyCases():
 
     case('naming patterns are not treated as citations', None, expectFail=False)
 
+    # 코드 예시처럼 보이는 비경로 토큰을 문서에 넣는다.
+    def addNonPathTokens(fixture):
+        fixture.append(
+            'docs/ARCHITECTURE.md',
+            '\nNon-path tokens: `go-chi/chi/v5`, `/api/runs`, `s3://bucket/key`, '
+            '`localhost:8080`, `@/views/Home.vue`, `src/{name}/file.py`.\n')
+
+    case('imports URIs routes and templates are not citations',
+         addNonPathTokens, expectFail=False)
+
+    case('explicit evidence checks an otherwise ambiguous path',
+         lambda f: f.append('docs/ARCHITECTURE.md', '\nProof: `evidence: missing/path`.\n'),
+         needle='missing/path')
+
+    case('evidence cannot escape the project',
+         lambda f: f.append('docs/ARCHITECTURE.md', '\nProof: `evidence: ../outside`.\n'),
+         needle='escapes the project')
+
+    case('existing extensionless directory citation passes',
+         lambda f: f.append('docs/ARCHITECTURE.md', '\nScripts: `scripts`.\n'),
+         expectFail=False)
+
     case('placeholder left in a doc fails',
          lambda f: f.append('docs/ARCHITECTURE.md', '\nTODO: fill this in\n'),
          needle='placeholder remains')
@@ -218,18 +241,15 @@ def verifyCases():
 
     # 개인 룰용 정본·진입점·문서 디렉터리 옵션을 구성한다.
     def usePersonalLayout(fixture):
-        fixture.path('AI_RULES.md').rename(fixture.path('AI_RULES.local.md'))
         fixture.path('docs').rename(fixture.path('docs_local'))
         fixture.path('CLAUDE.md').unlink()
-        fixture.path('AGENTS.md').unlink()
-        fixture.path('CLAUDE.local.md').symlink_to('AI_RULES.local.md')
-        fixture.path('AGENTS.md').symlink_to('AI_RULES.local.md')
-        indexPath = fixture.path('AI_RULES.local.md')
+        fixture.path('CLAUDE.local.md').symlink_to('AI_RULES.md')
+        indexPath = fixture.path('AI_RULES.md')
         indexPath.write_text(indexPath.read_text(encoding='utf-8').replace(
             'docs/', 'docs_local/'), encoding='utf-8')
 
     case('custom personal layout passes', usePersonalLayout, expectFail=False,
-         extraArgs=('--index', 'AI_RULES.local.md', '--docs-dir', 'docs_local',
+         extraArgs=('--index', 'AI_RULES.md', '--docs-dir', 'docs_local',
                     '--entries', 'CLAUDE.local.md,AGENTS.md'))
 
     # over the 150-line target but under the 190-line hard limit
@@ -255,9 +275,20 @@ def verifyCases():
     def addUnlinkedDocWithManifest(fixture):
         addUnlinkedDoc(fixture)
         run(MANIFEST, 'record', fixture.root, 'AI_RULES.md')
+        path = fixture.path('.rule-architect/manifest.json')
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        payload['schema'] = 'rule-architect/manifest@2'
+        path.write_text(json.dumps(payload), encoding='utf-8')
 
     case('unlinked hand-written doc only warns when a manifest exists',
          addUnlinkedDocWithManifest, expectFail=False)
+
+    # 최신 매니페스트만 기록해 결정 파일 누락 상태를 만든다.
+    def addCurrentManifestWithoutDecisions(fixture):
+        run(MANIFEST, 'record', fixture.root, 'AI_RULES.md')
+
+    case('current manifest requires persisted scan decisions',
+         addCurrentManifestWithoutDecisions, needle='manifest@3 requires scan decisions')
 
     # --json keeps the same verdict as the text output
     fixture = Fixture()
@@ -292,7 +323,14 @@ def manifestCases():
     fixture = Fixture()
     try:
         code, out = run(MANIFEST, 'check', fixture.root)
-        check('manifest check reports legacy without a manifest', code == 2 and 'LEGACY' in out, out[:160])
+        check('manifest check reports migratable legacy without a manifest',
+              code == 2 and 'LEGACY' in out and 'migration' in out, out[:160])
+
+        outside = fixture.root.parent / 'outside.md'
+        outside.write_text('# Outside\n', encoding='utf-8')
+        code, out = run(MANIFEST, 'record', fixture.root, '../outside.md')
+        check('manifest refuses to record a path outside the project',
+              code == 1 and 'outside the project' in out, out[:160])
 
         code, out = run(MANIFEST, 'record', fixture.root, 'AI_RULES.md',
                         'CLAUDE.md', 'AGENTS.md', 'docs/CODING_RULES.md')
@@ -338,6 +376,13 @@ def manifestCases():
               code == 1 and 'docs/CODING_RULES.md' in payload['missing'], out[:160])
         check('untracked UPPERCASE docs are listed',
               'docs/ARCHITECTURE.md' in payload['untracked'], out[:160])
+
+        fixture.path('docs_local').mkdir()
+        fixture.path('docs_local/LOCAL_RULES.md').write_text('# Local\n', encoding='utf-8')
+        code, out = run(MANIFEST, 'check', fixture.root, '--json', '--docs-dir', 'docs_local')
+        payload = json.loads(out)
+        check('manifest check scopes untracked docs to a custom directory',
+              code == 1 and payload['untracked'] == ['docs_local/LOCAL_RULES.md'], out[:160])
     finally:
         fixture.cleanup()
 
@@ -355,16 +400,14 @@ def quizCases():
         check('quiz scaffold states the required mix',
               payload['requiredMix'] == {'recall': 3, 'judgment': 1, 'negative': 1}, out[:160])
 
-        fixture.path('AI_RULES.local.md').write_text(
-            fixture.path('AI_RULES.md').read_text(encoding='utf-8'), encoding='utf-8')
         shutil.copytree(fixture.path('docs'), fixture.path('docs_local'))
         code, out = run(QUIZ, 'scaffold', fixture.root, '--lang', 'ko', '--run-id', 'local',
-                        '--index', 'AI_RULES.local.md', '--docs-dir', 'docs_local')
+                        '--index', 'AI_RULES.md', '--docs-dir', 'docs_local')
         custom = json.loads(out)
         check('quiz scaffold supports a custom neutral layout',
-              code == 0 and 'AI_RULES.local.md' in custom['ruleFiles']
+              code == 0 and 'AI_RULES.md' in custom['ruleFiles']
               and any(name.startswith('docs_local/') for name in custom['ruleFiles'])
-              and 'AI_RULES.local.md' in custom['isolationPrompt'], out[:160])
+              and 'AI_RULES.md' in custom['isolationPrompt'], out[:160])
 
         def results(runId, correctFlags,
                     types=('recall', 'recall', 'recall', 'judgment', 'negative')):
@@ -438,15 +481,20 @@ def quizCases():
 def scanCases():
     fixture = Fixture()
     try:
+        workflow = fixture.path('.forgejo/workflows/deploy.yml')
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text('name: deploy\n', encoding='utf-8')
         code, out = run(SCAN, fixture.root)
         payload = json.loads(out)
         check('scan emits a manifest with decisions',
-              code == 0 and payload['schema'] == 'rule-architect/scan@1'
+              code == 0 and payload['schema'] == 'rule-architect/scan@2'
               and len(payload['decisions']) == 6, out[:160])
         check('scan reports no truncation on a small project',
               payload['truncated'] == {'files': False, 'bytes': False, 'commits': False}, out[:160])
         check('scan detects the deploy signal from the Dockerfile',
               any(d['doc'] == 'DEPLOY.md' and d['met'] for d in payload['decisions']), out[:160])
+        check('scan detects Forgejo deployment workflows',
+              '.forgejo/workflows/deploy.yml' in payload['deployFiles'], out[:160])
         check('scan detects python as the stack',
               payload['stack'] and payload['stack'][0]['stack'] == 'python', out[:160])
         check('scan reports the neutral rule file and healthy runtime links',
@@ -459,7 +507,32 @@ def scanCases():
         code, out = run(SCAN, fixture.root, '--max-files', '1')
         payload = json.loads(out)
         check('scan flags truncation when the file cap is hit',
-              payload['truncated']['files'] is True, out[:160])
+              payload['truncated']['files'] is True
+              and any(item['status'] == 'unknown' for item in payload['decisions']), out[:160])
+
+        code, out = run(SCAN, fixture.root, '--max-files', '0')
+        check('scan rejects invalid traversal limits', code == 1 and 'limits' in out, out[:160])
+
+        vendor = fixture.path('web/static/vendors/options.min.js')
+        vendor.parent.mkdir(parents=True)
+        vendor.write_text('enum Fake { A, B }\n', encoding='utf-8')
+        response = fixture.path('src/api/response.py')
+        response.parent.mkdir(parents=True)
+        response.write_text("def send():\n    return jsonify({'ok': True})\n", encoding='utf-8')
+        fixture.path('CLAUDE.local.md').symlink_to('AI_RULES.md')
+        code, out = run(SCAN, fixture.root, '--entries', 'CLAUDE.local.md,AGENTS.md',
+                        '--output', '.rule-architect/scan.json')
+        payload = json.loads(out)
+        check('scan excludes vendored minified code from rule signals',
+              code == 0 and not any('vendors/' in item for item in payload['enumFiles']), out[:160])
+        check('scan requires observable response code for response-key docs',
+              any(item['id'] == 'response-keys' and item['status'] == 'met'
+                  and 'src/api/response.py' in item['evidence']
+                  for item in payload['decisions']), out[:160])
+        check('scan supports a custom runtime entry and persisted output',
+              'CLAUDE.local.md' in payload['existingRuleFiles']
+              and fixture.path('.rule-architect/scan.json').read_text(encoding='utf-8') == out,
+              out[:160])
 
         fixture.path('AGENTS.md').unlink()
         fixture.path('AGENTS.md').symlink_to('MISSING_RULES.md')
@@ -481,16 +554,134 @@ def scanCases():
         for round_ in range(4):
             (repo / 'OUTSIDE_A.md').write_text(f'a{round_}\n', encoding='utf-8')
             (repo / 'OUTSIDE_B.md').write_text(f'b{round_}\n', encoding='utf-8')
+            nested.path('OLD_A.md').write_text(f'a{round_}\n', encoding='utf-8')
+            nested.path('OLD_B.md').write_text(f'b{round_}\n', encoding='utf-8')
             subprocess.run(git + ['add', '-A'], capture_output=True, timeout=60)
             subprocess.run(git + ['commit', '-q', '-m', f'r{round_}'], capture_output=True, timeout=60)
+        nested.path('OLD_A.md').unlink()
+        nested.path('OLD_B.md').unlink()
+        subprocess.run(git + ['add', '-A'], capture_output=True, timeout=60)
+        subprocess.run(git + ['commit', '-q', '-m', 'remove old'], capture_output=True, timeout=60)
         code, out = run(SCAN, nested.root)
         payload = json.loads(out)
         groups = payload['coChange']['groups']
         check('co-change ignores commits outside the project directory',
               code == 0 and not any('OUTSIDE' in f for g in groups for f in g['files']),
               json.dumps(groups)[:160])
+        check('co-change ignores paths that no longer exist',
+              not any('OLD_' in f for g in groups for f in g['files']), json.dumps(groups)[:160])
     finally:
         nested.cleanup()
+
+
+# 스캔 결정 기록이 라우팅·노후화 검증까지 이어지는지 확인한다.
+def decisionCases():
+    fixture = Fixture()
+    try:
+        git = ['git', '-C', str(fixture.root)]
+        subprocess.run(git + ['init', '-q'], capture_output=True, timeout=60)
+        subprocess.run(git + ['config', 'user.email', 't@example.com'], capture_output=True, timeout=60)
+        subprocess.run(git + ['config', 'user.name', 'test'], capture_output=True, timeout=60)
+        subprocess.run(git + ['add', '-A'], capture_output=True, timeout=60)
+        subprocess.run(git + ['commit', '-q', '-m', 'baseline'], capture_output=True, timeout=60)
+        baselineHead = subprocess.run(
+            git + ['rev-parse', 'HEAD'], capture_output=True, text=True, timeout=60).stdout.strip()
+        decisions = [
+            ('controller', 'CONTROLLER_RULES.md', 'not_met'),
+            ('enum-codes', 'ENUM_CODES.md', 'not_met'),
+            ('response-keys', 'RESPONSE_KEYS.md', 'not_met'),
+            ('database', 'DB_RULES.md', 'not_met'),
+            ('deploy', 'DEPLOY.md', 'met'),
+            ('recurring-task', 'tasks/ADD_<TASK>.md', 'not_met'),
+        ]
+        scan = {
+            'schema': 'rule-architect/scan@2',
+            'root': fixture.root.as_posix(),
+            'gitHead': baselineHead,
+            'truncated': {'files': False, 'bytes': False, 'commits': False},
+            'decisions': [
+                {'id': identifier, 'doc': doc, 'status': status,
+                 'met': status == 'met', 'condition': 'fixture', 'evidence': ['Dockerfile']}
+                for identifier, doc, status in decisions
+            ],
+        }
+        scanPath = fixture.path('.rule-architect/scan.json')
+        scanPath.parent.mkdir(parents=True)
+        incompleteScan = dict(scan)
+        incompleteScan['decisions'] = scan['decisions'][:-1]
+        scanPath.write_text(json.dumps(incompleteScan), encoding='utf-8')
+        code, out = run(DECISIONS, 'init', fixture.root, '--scan', '.rule-architect/scan.json')
+        check('decision init rejects an incomplete scan manifest',
+              code == 1 and 'incomplete or ambiguous' in out
+              and not fixture.path('.rule-architect/decisions.json').exists(), out[:160])
+
+        scanPath.write_text(json.dumps(scan), encoding='utf-8')
+        code, out = run(DECISIONS, 'init', fixture.root, '--scan', '.rule-architect/scan.json')
+        check('decision init persists every scan decision',
+              code == 0 and fixture.path('.rule-architect/decisions.json').is_file(), out[:160])
+
+        code, out = run(VERIFY, fixture.root)
+        check('verify rejects a selected conditional doc that is not routed',
+              code == 1 and 'selected doc is not linked' in out, out[:160])
+
+        fixture.path('docs/DEPLOY.md').write_text('# Deploy\n\nDeployment rules.\n', encoding='utf-8')
+        fixture.edit(
+            'AI_RULES.md',
+            '| an error or surprising behavior appears | [docs/PITFALLS.md](docs/PITFALLS.md) |\n',
+            '| an error or surprising behavior appears | [docs/PITFALLS.md](docs/PITFALLS.md) |\n'
+            '| changing deployment artifacts | [docs/DEPLOY.md](docs/DEPLOY.md) |\n')
+        run(MANIFEST, 'record', fixture.root, 'AI_RULES.md', 'docs/DEPLOY.md')
+        code, out = run(VERIFY, fixture.root)
+        check('current manifest must track the decision record',
+              code == 1 and 'must track .rule-architect/decisions.json' in out, out[:160])
+        run(MANIFEST, 'record', fixture.root, '.rule-architect/decisions.json')
+        code, out = run(VERIFY, fixture.root)
+        check('verify accepts a complete conditional-doc decision record', code == 0, out[:160])
+
+        decisionPath = fixture.path('.rule-architect/decisions.json')
+        payload = json.loads(decisionPath.read_text(encoding='utf-8'))
+        controller = next(item for item in payload['decisions'] if item['id'] == 'controller')
+        controller['selectedDoc'] = 'docs/CONTROLLER_RULES.md'
+        controller['reason'] = 'manual include without resolution'
+        decisionPath.write_text(json.dumps(payload), encoding='utf-8')
+        code, out = run(VERIFY, fixture.root)
+        check('verify requires an explicit resolution for a negative override',
+              code == 1 and 'effective negative cannot select a doc' in out, out[:160])
+        controller['selectedDoc'] = None
+        controller['reason'] = None
+
+        recurring = next(item for item in payload['decisions'] if item['id'] == 'recurring-task')
+        recurring['observed'] = 'unknown'
+        decisionPath.write_text(json.dumps(payload), encoding='utf-8')
+        code, out = run(VERIFY, fixture.root)
+        check('verify rejects an unresolved partial-scan decision',
+              code == 1 and 'unknown scan result must be resolved' in out, out[:160])
+
+        recurring['resolution'] = 'not_met'
+        recurring['reason'] = 'fixture has no Git history'
+        decisionPath.write_text(json.dumps(payload), encoding='utf-8')
+        code, out = run(VERIFY, fixture.root)
+        check('verify accepts a reasoned manual resolution', code == 0, out[:160])
+
+        subprocess.run(git + ['add', '-A'], capture_output=True, timeout=60)
+        subprocess.run(git + ['commit', '-q', '-m', 'rules'], capture_output=True, timeout=60)
+        code, out = run(VERIFY, fixture.root)
+        check('rule-only commits do not make scan decisions stale', code == 0, out[:160])
+
+        fixture.append('src/db.py', '\n# source changed\n')
+        subprocess.run(git + ['add', 'src/db.py'], capture_output=True, timeout=60)
+        subprocess.run(git + ['commit', '-q', '-m', 'source'], capture_output=True, timeout=60)
+        code, out = run(VERIFY, fixture.root)
+        check('source commits make old scan decisions stale',
+              code == 1 and 'source changed since scan' in out, out[:160])
+
+        payload['decisions'] = [item for item in payload['decisions'] if item['id'] != 'database']
+        decisionPath.write_text(json.dumps(payload), encoding='utf-8')
+        code, out = run(VERIFY, fixture.root)
+        check('verify rejects an incomplete decision record',
+              code == 1 and 'decision manifest is incomplete' in out, out[:160])
+    finally:
+        fixture.cleanup()
 
 
 # Feed a PreToolUse payload to a guard installed under `root`
@@ -597,6 +788,11 @@ def transcriptLine(cwd, text, stamp, session='s1'):
                        'timestamp': stamp, 'message': {'role': 'user', 'content': text}})
 
 
+# Codex JSONL 레코드를 테스트용 한 줄로 만든다.
+def codexLine(recordType, payload, stamp):
+    return json.dumps({'timestamp': stamp, 'type': recordType, 'payload': payload})
+
+
 def harvestCases():
     fixture = Fixture()
     try:
@@ -638,8 +834,99 @@ def harvestCases():
         code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent, '--days', 1)
         check('harvest honours the recency window',
               code == 0 and json.loads(out)['counts']['corrections'] == 0, out[:200])
+
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent, '--days', '-1')
+        check('harvest rejects invalid limits', code == 1 and 'non-negative' in out, out[:200])
     finally:
         fixture.cleanup()
+
+    mixed = Fixture()
+    try:
+        root = mixed.root
+        claudeRoot = Path(mixed.tmp) / 'claude-projects'
+        claudeSession = claudeRoot / re.sub(r'[^A-Za-z0-9]', '-', str(root))
+        claudeSession.mkdir(parents=True)
+        duplicate = '절대 generated 파일 수정하지마'
+        (claudeSession / 'same.jsonl').write_text(
+            transcriptLine(str(root), duplicate, '2026-08-10T00:00:00.000Z') + '\n',
+            encoding='utf-8')
+
+        codexRoot = Path(mixed.tmp) / 'codex-sessions'
+        codexDay = codexRoot / '2026/08/10'
+        codexDay.mkdir(parents=True)
+        parentLines = [
+            codexLine('session_meta', {'id': 'codex-parent', 'cwd': str(root.parent)},
+                      '2026-08-10T00:00:00.000Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': '이게 아니라 아직 대상이 없어'}]},
+                      '2026-08-10T00:00:01.000Z'),
+            codexLine('response_item', {'type': 'custom_tool_call',
+                                        'input': f'workdir: "{root}"'},
+                      '2026-08-10T00:00:02.000Z'),
+            codexLine('turn_context', {'cwd': str(root.parent)},
+                      '2026-08-10T00:00:03.000Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': duplicate}]},
+                      '2026-08-10T00:00:00.000Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': '또 docs 폴더 수정하지 마'}]},
+                      '2026-08-10T00:00:04.000Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [{
+                'type': 'input_text',
+                'text': '# Context from my IDE setup:\n\n## Open tabs:\n- db.py\n\n'
+                        '## My request for Codex:\n절대 기존 룰 수정하지마'}]},
+                      '2026-08-10T00:00:05.000Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [{
+                'type': 'input_text',
+                'text': '계획을 롤백하는가?\n\n--- 응답 형식 ---\nVERDICT: AGREE'}]},
+                      '2026-08-10T00:00:06.000Z'),
+        ]
+        (codexDay / 'parent.jsonl').write_text('\n'.join(parentLines) + '\n', encoding='utf-8')
+        sibling = Path(str(root) + '-other')
+        siblingLines = [
+            codexLine('session_meta', {'id': 'codex-sibling', 'cwd': str(sibling)},
+                      '2026-08-10T00:01:00.000Z'),
+            codexLine('response_item', {'type': 'custom_tool_call',
+                                        'input': f'workdir: "{sibling}"'},
+                      '2026-08-10T00:01:00.500Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': '절대 다른 프로젝트 파일 수정하지마'}]},
+                      '2026-08-10T00:01:01.000Z'),
+        ]
+        (codexDay / 'sibling.jsonl').write_text('\n'.join(siblingLines) + '\n', encoding='utf-8')
+        subagentLines = [
+            codexLine('session_meta', {'id': 'codex-subagent', 'cwd': str(root),
+                                       'thread_source': 'subagent'},
+                      '2026-08-10T00:02:00.000Z'),
+            codexLine('response_item', {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': '절대 하위 에이전트 지시를 규칙으로 만들지마'}]},
+                      '2026-08-10T00:02:01.000Z'),
+        ]
+        (codexDay / 'subagent.jsonl').write_text(
+            '\n'.join(subagentLines) + '\n', encoding='utf-8')
+
+        code, out = run(HARVEST, root, '--source', 'all', '--claude-dir', claudeRoot,
+                        '--codex-dir', codexRoot, '--days', 0)
+        payload = json.loads(out)
+        texts = [item['text'] for item in payload['corrections']]
+        check('harvest combines Claude and Codex project sessions',
+              code == 0 and set(payload['sources']) == {'claude', 'codex'}
+              and payload['counts']['sessionsMatched'] == 2, out[:200])
+        check('harvest attributes a parent-cwd session from structured tool use',
+              any('docs 폴더' in text for text in texts)
+              and not any('대상이 없어' in text for text in texts), out[:200])
+        check('harvest rejects sibling-prefix projects',
+              not any('다른 프로젝트' in text for text in texts), out[:200])
+        check('harvest rejects Codex subagent prompts',
+              not any('하위 에이전트' in text for text in texts), out[:200])
+        check('harvest deduplicates the same correction across runtimes',
+              texts.count(duplicate) == 1 and payload['counts']['duplicatesDropped'] == 1,
+              out[:200])
+        check('harvest strips IDE context and evaluator prompts',
+              '절대 기존 룰 수정하지마' in texts
+              and not any('Open tabs' in text or 'VERDICT:' in text for text in texts), out[:200])
+    finally:
+        mixed.cleanup()
 
 
 def main():
@@ -647,6 +934,7 @@ def main():
     manifestCases()
     quizCases()
     scanCases()
+    decisionCases()
     hookgenCases()
     harvestCases()
     print()
