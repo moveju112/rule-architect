@@ -35,7 +35,7 @@ PASS_MIN_CORRECT = 4
 
 PROMPT_EN = """You are answering questions about a project you cannot see.
 
-You have been given ONLY the generated rule files: AI_RULES.md and the docs/*.md
+You have been given ONLY the generated rule files: AI_RULES.md and the RULE_DOCS_DIR/*.md
 files it links. You have NO access to the source code. Do not guess and
 do not reason from what projects usually do.
 
@@ -46,7 +46,7 @@ Return one JSON object matching the schema you were given. No prose outside it."
 
 PROMPT_KO = """당신은 볼 수 없는 프로젝트에 대해 답한다.
 
-주어진 것은 생성된 룰 파일뿐이다 — AI_RULES.md와 거기서 링크한 docs/*.md.
+주어진 것은 생성된 룰 파일뿐이다 — AI_RULES.md와 거기서 링크한 RULE_DOCS_DIR/*.md.
 소스 코드 접근은 없다. 추측하지 말고, 보통 프로젝트가 이럴 것이라는
 일반론으로 답하지 마라.
 
@@ -72,7 +72,7 @@ RESULT_SCHEMA = {
 # The prompt and question mix the host must honour when it dispatches the subagent
 def commandScaffold(root, lang, runId, indexName, docsDirname):
     prompt = PROMPT_KO if lang == 'ko' else PROMPT_EN
-    prompt = prompt.replace('AI_RULES.md', indexName).replace('docs/*.md', f'{docsDirname}/*.md')
+    prompt = prompt.replace('AI_RULES.md', indexName).replace('RULE_DOCS_DIR/*.md', f'{docsDirname}/*.md')
     scaffold = {
         'schema': 'rule-architect/quiz@1',
         'runId': runId,
@@ -90,7 +90,7 @@ def commandScaffold(root, lang, runId, indexName, docsDirname):
 
 
 # The rule set the isolated agent is allowed to see
-def discoverRuleFiles(root, indexName='AI_RULES.md', docsDirname='docs'):
+def discoverRuleFiles(root, indexName='AI_RULES.md', docsDirname='docs/ai-rules'):
     files = [indexName] if (root / indexName).is_file() else []
     docsDir = root / docsDirname
     if docsDir.is_dir():
@@ -190,7 +190,7 @@ def main():
     scaffoldParser.add_argument('--lang', choices=('ko', 'en'), default='en')
     scaffoldParser.add_argument('--run-id', default='run')
     scaffoldParser.add_argument('--index', default='AI_RULES.md')
-    scaffoldParser.add_argument('--docs-dir', default='docs')
+    scaffoldParser.add_argument('--docs-dir', default='docs/ai-rules')
 
     gradeParser = sub.add_parser('grade')
     gradeParser.add_argument('root')

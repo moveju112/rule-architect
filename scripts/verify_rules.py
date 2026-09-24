@@ -2,16 +2,16 @@
 """Verification script for rule-architect output.
 
 Usage: python3 verify_rules.py <project-root> [--lenient] [--json]
-       [--index AI_RULES.md] [--docs-dir docs]
+       [--index AI_RULES.md] [--docs-dir docs/ai-rules]
        [--entries CLAUDE.md,AGENTS.md]
 
 Checks:
 1. AI_RULES.md exists + line budget (60 target, hard limit 80)
-2. docs/*.md line budget (150 target, hard limit 190)
-3. docs/tasks/*.md playbook line budget (80 target, hard limit 100)
+2. docs/ai-rules/*.md line budget (150 target, hard limit 190)
+3. docs/ai-rules/tasks/*.md playbook line budget (80 target, hard limit 100)
 4. Bidirectional link integrity:
    - every docs file AI_RULES.md links actually exists
-   - every generated docs/**/UPPERCASE.md is linked from AI_RULES.md
+   - every generated docs/ai-rules/**/UPPERCASE.md is linked from AI_RULES.md
 5. leftover placeholder scan (TBD, TODO, FIXME, XXX, <placeholder>)
 6. linked docs use UPPERCASE naming
 7. evidence freshness: every `path[:line]` a rule cites must exist, and the
@@ -33,6 +33,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 # 다른 번들 스크립트를 가져와도 설치 디렉터리에 캐시 파일을 남기지 않는다.
 sys.dont_write_bytecode = True
@@ -43,7 +44,7 @@ from decisions import validateDecisionRecord
 INDEX_TARGET, INDEX_HARD = 60, 80
 # 정본과 룰 디렉터리, 런타임 진입점. 개인 룰은 CLI 옵션으로 이름만 바꾼다.
 INDEX_NAME = 'AI_RULES.md'
-DOCS_DIRNAME = 'docs'
+DOCS_DIRNAME = 'docs/ai-rules'
 ENTRY_NAMES = ('CLAUDE.md', 'AGENTS.md')
 DOC_TARGET, DOC_HARD = 150, 190
 TASK_TARGET, TASK_HARD = 80, 100
@@ -53,8 +54,10 @@ ENTRY_MAX_LINES = 15
 REQUIRED_DOCS = ('ARCHITECTURE.md', 'CODING_RULES.md', 'PITFALLS.md')
 
 PLACEHOLDER_RE = re.compile(r'\b(TBD|TODO|FIXME|XXX)\b|<placeholder>', re.IGNORECASE)
-LINK_RE = re.compile(r'\[[^\]]*\]\((docs/[^)]+\.md)\)')
-ANY_LINK_RE = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
+ANY_LINK_RE = re.compile(r'\[[^\]\n]*\]\(((?:[^()]|\([^()]*\))*)\)')
+REFERENCE_DEF_RE = re.compile(r'^ {0,3}\[([^\]\n]+)\]:\s*(?:<([^>\n]+)>|([^\s]+))', re.MULTILINE)
+REFERENCE_USE_RE = re.compile(r'\[([^\]\n]+)\]\[([^\]\n]*)\]')
+INLINE_CODE_RE = re.compile(r'(?<!`)``[^`\n]*``(?!`)|(?<!`)`[^`\n]*`(?!`)')
 BACKTICK_RE = re.compile(r'`([^`\n]+)`')
 # A citation may end with :42 or :42-58
 LINE_SUFFIX_RE = re.compile(r'^(.*?):(\d+)(?:-(\d+))?$')
@@ -64,6 +67,7 @@ HEADING_RE = re.compile(r'^#{1,6}\s')
 GIT_REF_PREFIXES = ('origin/', 'upstream/', 'refs/')
 GIT_REFS = {'HEAD', 'FETCH_HEAD', 'ORIG_HEAD'}
 URI_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://')
+LINK_SCHEME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
 HOST_PORT_RE = re.compile(r'^(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:]+\]):\d+$')
 PATH_SUFFIXES = {
     '.c', '.cc', '.cpp', '.css', '.csv', '.dart', '.env', '.ex', '.exs', '.go',
@@ -183,7 +187,54 @@ def checkCitations(path, root, errors, linkTargets):
 
 # Find leftover placeholders in prose (code blocks excluded)
 def stripCode(text):
-    return re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    return re.sub(r'(```|~~~).*?\1', '', text, flags=re.DOTALL)
+
+
+# 정의형 링크와 인라인 링크를 같은 대상 목록으로 정규화한다. 코드 예시는 링크가 아니다.
+def markdownReferences(text):
+    visible = INLINE_CODE_RE.sub('', stripCode(text))
+    return {re.sub(r'\s+', ' ', label).strip().casefold(): angle or target
+            for label, angle, target in REFERENCE_DEF_RE.findall(visible)}
+
+
+# 괄호가 있는 대상·링크 제목·참조형 링크를 합쳐 기존 검증기에 전달한다.
+def markdownLinks(text, references=None, errors=None, source=None):
+    visible = INLINE_CODE_RE.sub('', stripCode(text))
+    defined = markdownReferences(visible) if references is None else references
+    links = []
+    for raw in ANY_LINK_RE.findall(visible):
+        link = raw.strip()
+        if link:
+            links.append(link[1:link.index('>')] if link.startswith('<') and '>' in link
+                         else link.split()[0])
+    for label, reference in REFERENCE_USE_RE.findall(visible):
+        key = re.sub(r'\s+', ' ', reference or label).strip().casefold()
+        if key in defined:
+            links.append(defined[key])
+        elif errors is not None:
+            errors.append(f'{source.name}: undefined reference link: {reference or label}')
+    return links
+
+
+# 정본에서 도달하는 Markdown 문서의 상대 링크를 따라가며 누락·탈출을 검사한다.
+def checkMarkdownLinks(path, root, errors, checked):
+    resolved = path.resolve()
+    if resolved in checked:
+        return
+    checked.add(resolved)
+    for raw in markdownLinks(path.read_text(encoding='utf-8'), errors=errors, source=path):
+        if raw.startswith(('#', '/')) or LINK_SCHEME_RE.match(raw):
+            continue
+        target = unquote(raw.split('#', 1)[0].split('?', 1)[0])
+        if not target:
+            continue
+        destination = (path.parent / target).resolve()
+        if not destination.is_relative_to(root.resolve()):
+            errors.append(f'{path.name}: relative link escapes the project: {raw}')
+        elif not destination.exists():
+            errors.append(f'{path.name}: relative link target missing: {raw}')
+        elif destination.is_file() and destination.suffix.lower() == '.md':
+            checkMarkdownLinks(destination, root, errors, checked)
 
 
 def checkPlaceholders(path, errors):
@@ -207,7 +258,7 @@ def checkRuleFormat(path, errors):
         joined = '\n'.join(body)
         # 정본을 다른 룰 문서에 위임한 항목은 면제한다. 중복 제거의 결과물이라
         # why/✅ 를 요구하면 방금 없앤 중복을 다시 쓰게 만든다.
-        delegated = ANY_LINK_RE.search(line + '\n' + joined) and 'why:' not in joined
+        delegated = markdownLinks(line + '\n' + joined) and 'why:' not in joined
         if delegated:
             continue
         if 'why:' not in joined:
@@ -241,7 +292,7 @@ def checkCoreRules(indexMd, errors):
 
 
 # Routing rows must carry a trigger that says more than the file name
-def checkRoutingTable(indexMd, errors):
+def checkRoutingTable(indexMd, errors, references):
     lines = indexMd.read_text(encoding='utf-8').splitlines()
     rows = 0
     for lineNo, line in enumerate(lines, 1):
@@ -250,10 +301,11 @@ def checkRoutingTable(indexMd, errors):
         cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
         if len(cells) < 2:
             continue
-        linked = ANY_LINK_RE.findall(cells[-1]) or ANY_LINK_RE.findall(line)
+        linked = markdownLinks(cells[-1], references) or markdownLinks(line, references)
         if not linked:
             continue
-        docTarget = next((t for t in linked if t.endswith('.md')), None)
+        docTarget = next((t.split('#', 1)[0] for t in linked
+                          if t.split('#', 1)[0].endswith('.md')), None)
         if docTarget is None:
             continue
         rows += 1
@@ -325,15 +377,12 @@ def parseNamedOption(argv, flag, default):
 
 
 def main():
-    global INDEX_NAME, DOCS_DIRNAME, ENTRY_NAMES, LINK_RE
+    global INDEX_NAME, DOCS_DIRNAME, ENTRY_NAMES
     argv = [a for a in sys.argv[1:]]
     INDEX_NAME = parseNamedOption(argv, '--index', INDEX_NAME)
     DOCS_DIRNAME = parseNamedOption(argv, '--docs-dir', DOCS_DIRNAME)
     entries = parseNamedOption(argv, '--entries', ','.join(ENTRY_NAMES))
     ENTRY_NAMES = tuple(name.strip() for name in entries.split(',') if name.strip())
-    # 룰 디렉터리명이 바뀌면 링크 정규식도 따라가야 한다 — 안 그러면 링크를 하나도 못 잡아
-    # 모든 문서가 "링크 안 됨"으로 오판된다
-    LINK_RE = re.compile(rf'\[[^\]]*\]\(({re.escape(DOCS_DIRNAME)}/[^)]+\.md)\)')
     strict = '--lenient' not in argv
     asJson = '--json' in argv
     positional = [a for a in argv if not a.startswith('--')]
@@ -343,7 +392,7 @@ def main():
     if len(positional) != 1 or not validEntries:
         print(
             'usage: verify_rules.py <project-root> [--lenient] [--json] '
-            '[--index AI_RULES.md] [--docs-dir docs] '
+            '[--index AI_RULES.md] [--docs-dir docs/ai-rules] '
             '[--entries CLAUDE.md,AGENTS.md]',
             file=sys.stderr,
         )
@@ -361,15 +410,18 @@ def main():
         errors.append(f'{INDEX_NAME}: neutral index must be a regular file, not a symlink')
 
     indexText = indexMd.read_text(encoding='utf-8')
-    linkTargets = set(ANY_LINK_RE.findall(indexText))
+    checkMarkdownLinks(indexMd, root, errors, set())
+    linkTargets = set(markdownLinks(indexText))
     checkBudget(indexMd, INDEX_TARGET, INDEX_HARD, errors, warnings, strict)
     checkPlaceholders(indexMd, errors)
     checkCitations(indexMd, root, errors, linkTargets)
     checkCoreRules(indexMd, errors)
-    checkRoutingTable(indexMd, errors)
+    checkRoutingTable(indexMd, errors, markdownReferences(indexText))
 
     # 2. 정본이 라우팅하는 상세 룰을 수집한다.
-    linked = set(LINK_RE.findall(indexText))
+    linked = {target for target in (raw.split('#', 1)[0] for raw in linkTargets)
+              if target.startswith(DOCS_DIRNAME.rstrip('/') + '/')
+              and target.endswith('.md')}
 
     # 3. link targets exist + UPPERCASE naming + per-file checks
     for rel in sorted(linked):
@@ -385,7 +437,7 @@ def main():
             checkBudget(target, TASK_TARGET, TASK_HARD, errors, warnings, strict)
         else:
             checkBudget(target, DOC_TARGET, DOC_HARD, errors, warnings, strict)
-        docLinks = set(ANY_LINK_RE.findall(target.read_text(encoding='utf-8')))
+        docLinks = set(markdownLinks(target.read_text(encoding='utf-8')))
         checkPlaceholders(target, errors)
         checkCitations(target, root, errors, docLinks)
         checkRuleFormat(target, errors)

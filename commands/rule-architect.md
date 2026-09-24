@@ -1,5 +1,5 @@
 ---
-description: Generate or update a runtime-neutral AI rule set (AI_RULES.md + docs/*.md)
+description: Generate or update a runtime-neutral AI rule set (AI_RULES.md + docs/ai-rules/*.md)
 argument-hint: "[project-path] [--update]"
 ---
 

@@ -9,7 +9,7 @@ npx skills add moveju112/rule-architect -g
 
 An agent skill that generates a production-grade, runtime-neutral rule set for a
 project: one slim `AI_RULES.md` index, runtime entry files that resolve to it, and
-on-demand `docs/*.md` rule files — all verified by a script and a quiz test before
+on-demand `docs/ai-rules/*.md` rule files — all verified by a script and a quiz test before
 it calls itself done.
 
 Works in **English and Korean**. Triggers are registered in both languages, and
@@ -45,11 +45,11 @@ citation-freshness checks are deterministic, so the model tier does not affect t
 - **CLAUDE.md + AGENTS.md** — relative symlinks to `AI_RULES.md` on Linux/WSL/POSIX projects.
   - Repositories that must work without symlink support receive two short regular-file pointers instead.
   - Both entries use the same mode; neither contains rule bodies or points at the other.
-- **docs/*.md** (≤150 lines each) — topic rule docs, loaded only when the topic comes up.
+- **docs/ai-rules/*.md** (≤150 lines each) — topic rule docs, loaded only when the topic comes up; ordinary `docs/` files stay separate.
   - Always: `ARCHITECTURE.md`, `CODING_RULES.md`, `PITFALLS.md`
-  - Conditional: `CONTROLLER_RULES.md`, `ENUM_CODES.md`, `RESPONSE_KEYS.md`, `DB_RULES.md`, `DEPLOY.md`
+  - Conditional: `CONTROLLER_RULES.md`, `API_RULES.md` (API/routes layer or flat `/api/` routes), `ENUM_CODES.md`, `RESPONSE_KEYS.md` (payload conventions), `DB_RULES.md`, `DEPLOY.md`
     (including detected deployment workflows under `.github/` or `.forgejo/`)
-- **docs/tasks/*.md** (≤80 lines each) — playbooks for recurring tasks: numbered steps, each citing backticked `evidence: file:line`.
+- **docs/ai-rules/tasks/*.md** (≤80 lines each) — playbooks for recurring tasks: numbered steps, each citing backticked `evidence: file:line`.
   - Generated only for tasks where `git log` shows the same file set changed together ≥3 times (e.g. `ADD_API.md`, `ADD_MODEL.md`).
   - Cross-file couplings are recorded as playbook steps, not as standalone rules.
 
@@ -79,7 +79,7 @@ those are rules.
 
 The rule set is written in one language per run, chosen in this order:
 
-1. The project's existing `AI_RULES.md` / legacy rule index / `docs/*.md` / `README` language.
+1. The project's existing `AI_RULES.md` / legacy rule index / `docs/ai-rules/*.md` (or v1 `docs/*.md`) / `README` language.
 2. The language you are writing in.
 3. English.
 
@@ -146,7 +146,8 @@ Two gates, and the rule set is not done until both pass.
 exceeding a target budget fails rather than warns.** `--lenient` demotes target
 overruns to warnings; hard limits fail either way. It checks:
 
-- bidirectional link integrity, and that `ARCHITECTURE.md`, `CODING_RULES.md`,
+- bidirectional link integrity, reachable relative Markdown links (including reference-style links,
+  but not code examples), and that `ARCHITECTURE.md`, `CODING_RULES.md`,
   and `PITFALLS.md` exist and are linked
 - line budgets: AI_RULES.md ≤60 (hard 80), docs ≤150 (hard 190), playbooks ≤80 (hard 100)
 - both runtime entries are valid relative symlinks to `AI_RULES.md`, or both are portable pointers
@@ -195,8 +196,13 @@ one; a per-file hash can, and the policy on ambiguity is to stop rather than gue
 Calling `--update` authorizes the structural migration itself. A legacy index body in
 `CLAUDE.md`, `CLAUDE.local.md`, or another recognized loader moves unchanged to the normal
 file `AI_RULES.md`; both runtime entries then point directly to it in one mode. The update
-must not finish with the legacy body still stored in a runtime-owned entry. This does not
-weaken exit-1 conflict protection or permit choosing between different rule bodies.
+must not finish with the legacy body still stored in a runtime-owned entry. v1 generated
+rule docs under `docs/` migrate to `docs/ai-rules/` after a clean manifest check
+(`--docs-dir docs` for v1); unrelated and hand-written docs remain untouched. Conflicting
+or untracked destinations block migration. After refreshing `scan@3` decisions (including
+`api`), record the complete new generated set with `manifest.py record --replace` so old
+paths are no longer tracked. This does not weaken exit-1 conflict protection or permit
+choosing between different rule bodies.
 Current `manifest@3` records also require `.rule-architect/decisions.json`, so a run
 cannot pass after silently ignoring its own scan result. Include that decision file in
 `manifest.py record` with the generated rule files so later hand edits remain protected.
@@ -205,7 +211,7 @@ cannot pass after silently ignoring its own scan result. Include that decision f
 
 `scripts/scan.py <root> --output <temporary-scan.json>` prints and optionally persists a JSON
 manifest of measured signals — stack, layer directories, enum-defining files, actual
-response-serialization code, deploy artifacts, git co-change groups — and the
+response-serialization code, ORM/SQL access, deploy artifacts, git co-change groups — and the
 conditional-doc decisions derived from them. Each decision is `met`, `not_met`, or
 `unknown` and carries evidence. It also
 reports `brokenRuleLinks`, which blocks an update before a damaged entry is mistaken
@@ -215,15 +221,25 @@ so a project nested inside a larger repository does not inherit that repository'
 commits.
 
 Every traversal is bounded (`--max-files`, `--max-bytes`, `--max-commits`); vendor,
-fixture, minified, and build code is excluded from rule signals. Hitting a cap turns
+fixture, minified, build, runtime logs, and known binary assets (including APK/APKS archives) are excluded from rule signals and file/byte budgets.
+Use `--docs-dir docs_local` for custom generated rules, `--entries CLAUDE.local.md,AGENTS.md`
+for custom loaders, and repeat `--exclude-dir docs` for separately owned/forbidden trees.
+The saved scan scope is replayed by `decisions.py check`; generated rules and audit files do not
+contribute to source history or source fingerprints. Hitting a cap turns
 unsupported negative decisions into `unknown`, so a partial scan cannot masquerade as
 a complete negative.
 
 `scripts/decisions.py init <root> --scan <temporary-scan.json>` turns those results
-into `.rule-architect/decisions.json`. Every `unknown` and every override needs a
+into `.rule-architect/decisions.json`. On an existing clean manifest, use
+`decisions.py refresh <root> --scan <temporary-scan.json>` to preview changes, then
+`--write` after review (and `--accept-observed-changes` only after reviewing changed
+signals); it preserves manual selections and reasons and updates the manifest hash
+only if the scan still matches current source. Every `unknown` and every override needs a
 manual resolution and reason. `verify_rules.py` consumes the same record and checks
-that all six decisions exist, selected docs are routed, and no later source commit has
-invalidated the scan. Rule-only commits do not make the record stale.
+that all seven v2 decisions exist (six for legacy scans), selected docs are routed, and no later source commit or uncommitted source edit has
+invalidated a fingerprinted scan. Local changes to `.env*`, build files and supported frontend
+source also invalidate new fingerprints; generated-rule edits do not make them stale;
+legacy records without a fingerprint retain their previous Git-HEAD check.
 
 ## Harvested rules
 

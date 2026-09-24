@@ -31,8 +31,16 @@ GUARD = ROOT / 'scripts' / 'rule_guard.py'
 FAILED = []
 
 
-def run(script, *args):
-    result = subprocess.run([sys.executable, str(script), *[str(a) for a in args]],
+# 이전 픽스처는 v1 경로를 유지해 명시적 호환성도 함께 시험한다.
+def run(script, *args, legacy=True):
+    arguments = [str(a) for a in args]
+    if (legacy and '--docs-dir' not in arguments
+            and (script == VERIFY
+                 or (script == MANIFEST and arguments[:1] == ['check'])
+                 or script == DECISIONS
+                 or (script == QUIZ and arguments[:1] == ['scaffold']))):
+        arguments += ['--docs-dir', 'docs']
+    result = subprocess.run([sys.executable, str(script), *arguments],
                             capture_output=True, text=True, timeout=120)
     return result.returncode, result.stdout + result.stderr
 
@@ -85,6 +93,51 @@ def case(label, mutate, expectFail=True, needle=None, extraArgs=()):
 
 def verifyCases():
     case('good fixture passes strict', None, expectFail=False)
+    case('broken relative link in routed doc fails',
+         lambda f: f.append('docs/PITFALLS.md', '\n[missing](MISSING.md)\n'),
+         needle='relative link target missing: MISSING.md')
+    case('relative link cannot escape project',
+         lambda f: f.append('docs/PITFALLS.md', '\n[outside](../../../outside.md)\n'),
+         needle='relative link escapes the project')
+
+    # 라우팅 문서가 연결한 수동 문서의 링크도 추적하되 순환 참조는 한 번만 읽는다.
+    def addNestedBrokenLink(fixture):
+        fixture.append('docs/PITFALLS.md', '\n[notes](notes.md)\n')
+        fixture.path('docs/notes.md').write_text(
+            '[back](PITFALLS.md)\n[missing](sub/MISSING.md)\n', encoding='utf-8')
+
+    case('broken link in transitively referenced manual doc fails',
+         addNestedBrokenLink, needle='relative link target missing: sub/MISSING.md')
+    case('external links and local anchors do not fail',
+         lambda f: f.append('docs/PITFALLS.md',
+                            '\n[mail](mailto:team@example.com) [here](#rules) '
+                            '[source](CODING_RULES.md#style) '
+                            '[title](CODING_RULES.md "Style")\n'),
+         expectFail=False)
+
+    case('inline and tilde-fenced code links are not followed',
+         lambda f: f.append('docs/PITFALLS.md',
+                            '\n`[example](MISSING.md)`\n~~~markdown\n'
+                            '[fence](MISSING.md)\n~~~\n'), expectFail=False)
+    case('broken reference-style relative link fails',
+         lambda f: f.append('docs/PITFALLS.md',
+                            '\n[missing][guide]\n\n[guide]: MISSING.md "Guide"\n'),
+         needle='relative link target missing: MISSING.md')
+    case('undefined reference-style link fails',
+         lambda f: f.append('docs/PITFALLS.md', '\n[missing][guide]\n'),
+         needle='undefined reference link: guide')
+    case('parentheses inside a valid relative link pass',
+         lambda f: (f.path('docs/notes(v1).md').write_text('# Notes\n', encoding='utf-8'),
+                    f.append('docs/PITFALLS.md', '\n[notes](notes(v1).md)\n')),
+         expectFail=False)
+
+    # 정본의 참조형 라우팅 링크도 링크 무결성과 라우팅 검사에 모두 반영한다.
+    def addReferenceRouting(fixture):
+        fixture.edit('AI_RULES.md', '[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)',
+                     '[docs/ARCHITECTURE.md][arch]')
+        fixture.append('AI_RULES.md', '\n[arch]: docs/ARCHITECTURE.md\n')
+
+    case('reference-style routing link passes', addReferenceRouting, expectFail=False)
 
     case('missing required doc fails',
          lambda f: f.path('docs/PITFALLS.md').unlink(),
@@ -487,14 +540,19 @@ def scanCases():
         code, out = run(SCAN, fixture.root)
         payload = json.loads(out)
         check('scan emits a manifest with decisions',
-              code == 0 and payload['schema'] == 'rule-architect/scan@2'
-              and len(payload['decisions']) == 6, out[:160])
+              code == 0 and payload['schema'] == 'rule-architect/scan@3'
+              and len(payload['decisions']) == 7, out[:160])
         check('scan reports no truncation on a small project',
               payload['truncated'] == {'files': False, 'bytes': False, 'commits': False}, out[:160])
+        check('scan records a content fingerprint for source freshness',
+              re.fullmatch(r'[0-9a-f]{64}', payload['sourceFingerprint']) is not None, out[:160])
         check('scan detects the deploy signal from the Dockerfile',
               any(d['doc'] == 'DEPLOY.md' and d['met'] for d in payload['decisions']), out[:160])
         check('scan detects Forgejo deployment workflows',
               '.forgejo/workflows/deploy.yml' in payload['deployFiles'], out[:160])
+        check('scan omits API rules without an API layer',
+              any(d['id'] == 'api' and d['status'] == 'not_met'
+                  for d in payload['decisions']), out[:160])
         check('scan detects python as the stack',
               payload['stack'] and payload['stack'][0]['stack'] == 'python', out[:160])
         check('scan reports the neutral rule file and healthy runtime links',
@@ -504,6 +562,66 @@ def scanCases():
         code, second = run(SCAN, fixture.root)
         check('scan output is byte-identical across runs', out == second, 'differs')
 
+        archive = fixture.path('export.apks')
+        archive.write_bytes(b'\0' * 200001)
+        code, out = run(SCAN, fixture.root, '--max-bytes', '80000')
+        payload = json.loads(out)
+        check('large APK bundles do not exhaust text scan budget',
+              code == 0 and not payload['truncated']['bytes']
+              and payload['counts']['bytes'] < 80000, out[:160])
+        archive.unlink()
+        dump = fixture.path('master_snapshot.aof')
+        dump.write_bytes(b'0' * 200001)
+        code, out = run(SCAN, fixture.root, '--max-bytes', '80000')
+        payload = json.loads(out)
+        check('legacy AOF dumps cannot exhaust the source scan budget',
+              code == 0 and not payload['truncated']['bytes'], out[:160])
+        dump.unlink()
+        log = fixture.path('logs/large.log')
+        log.parent.mkdir()
+        log.write_text('ignored runtime log\n' * 14000, encoding='utf-8')
+        code, out = run(SCAN, fixture.root, '--max-bytes', '80000')
+        payload = json.loads(out)
+        check('runtime logs cannot exhaust the scan budget',
+              code == 0 and not payload['truncated']['bytes'], out[:160])
+        log.unlink()
+        asset = fixture.path('data/Resources/theme.xml')
+        asset.parent.mkdir(parents=True)
+        asset.write_text('<theme>legacy client assets</theme>\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('asset Resources directories do not imply controller rules',
+              code == 0 and not next(item for item in payload['decisions']
+                                     if item['id'] == 'controller')['met'], out[:160])
+        asset.unlink()
+
+        generated = fixture.path('docs_local/api/route.py')
+        generated.parent.mkdir(parents=True)
+        generated.write_text('@app.get("/api/internal")\ndef internal(): pass\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root, '--docs-dir', 'docs_local')
+        payload = json.loads(out)
+        check('custom rule directories cannot invent API signals',
+              code == 0 and not payload['apiRouteFiles']
+              and not next(d for d in payload['decisions'] if d['id'] == 'api')['met'], out[:160])
+        check('custom docs directory is persisted in scan scope',
+              payload['scanScope']['docsDir'] == 'docs_local', out[:160])
+        generated.unlink()
+
+        restricted = fixture.path('private/routes.py')
+        restricted.parent.mkdir()
+        restricted.write_text('@app.get("/api/restricted")\n' + 'x' * 100000,
+                              encoding='utf-8')
+        code, out = run(SCAN, fixture.root, '--exclude-dir', 'private', '--max-bytes', '80000')
+        payload = json.loads(out)
+        check('excluded project directory is never traversed or budgeted',
+              code == 0 and not payload['truncated']['bytes']
+              and 'private' in payload['scanScope']['excludedDirs']
+              and not payload['apiRouteFiles'], out[:160])
+        restricted.unlink()
+        code, out = run(SCAN, fixture.root, '--exclude-dir', '../outside')
+        check('scanner rejects exclusions outside project',
+              code == 1 and 'project-relative' in out, out[:160])
+
         code, out = run(SCAN, fixture.root, '--max-files', '1')
         payload = json.loads(out)
         check('scan flags truncation when the file cap is hit',
@@ -512,6 +630,70 @@ def scanCases():
 
         code, out = run(SCAN, fixture.root, '--max-files', '0')
         check('scan rejects invalid traversal limits', code == 1 and 'limits' in out, out[:160])
+
+        guide = fixture.path('docs/api/GUIDE.md')
+        guide.parent.mkdir(parents=True, exist_ok=True)
+        guide.write_text('# API docs\n', encoding='utf-8')
+        generated = fixture.path('docs/ai-rules/api/EXAMPLE.py')
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        generated.write_text('def fake(): pass\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('ordinary API docs and generated rules do not trigger API source rules',
+              code == 0 and not any(d['id'] == 'api' and d['met']
+                                    for d in payload['decisions']), out[:160])
+
+        flat = fixture.path('src/app.py')
+        flat.write_text('@app.post("/api/items")\ndef create():\n'
+                        '    return JSONResponse({"ok": True})\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('flat API route triggers API and response rules',
+              code == 0 and 'src/app.py' in payload['apiRouteFiles']
+              and all(next(d for d in payload['decisions'] if d['id'] == name)['met']
+                      for name in ('api', 'response-keys')), out[:160])
+        flat.write_text('router = APIRouter(prefix="/api")\n@router.get("/items")\n'
+                        'def list_items():\n    return JSONResponse({"items": []})\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('flat prefixed APIRouter also triggers API rules',
+              code == 0 and 'src/app.py' in payload['apiRouteFiles'], out[:160])
+        flat.unlink()
+
+        model = fixture.path('src/domain/model/Vehicle.kt')
+        model.parent.mkdir(parents=True)
+        model.write_text('data class Vehicle(val id: String)\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('plain domain models do not trigger database rules',
+              code == 0 and not next(d for d in payload['decisions']
+                                     if d['id'] == 'database')['met'], out[:160])
+        model.write_text('@Entity\ndata class Vehicle(val id: String)\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('ORM model annotation triggers database rules',
+              code == 0 and payload['ormModelFiles'] == ['src/domain/model/Vehicle.kt']
+              and next(d for d in payload['decisions'] if d['id'] == 'database')['met'], out[:160])
+        model.unlink()
+        orm = fixture.path('src/domain/model/vehicle.py')
+        orm.write_text('class Vehicle(Base):\n    id = Column(Integer)\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('SQLAlchemy Column mappings trigger database rules',
+              code == 0 and payload['ormModelFiles'] == ['src/domain/model/vehicle.py'],
+              out[:160])
+        orm.unlink()
+        sql = fixture.path('src/db/query.go')
+        sql.parent.mkdir()
+        sql.write_text('func selectRows() { query := "SELECT id FROM vehicles" }\n',
+                       encoding='utf-8')
+        code, out = run(SCAN, fixture.root)
+        payload = json.loads(out)
+        check('SQL without an ORM also triggers database rules',
+              code == 0 and payload['sqlAccessFiles'] == ['src/db/query.go']
+              and next(d for d in payload['decisions'] if d['id'] == 'database')['met'],
+              out[:160])
+        sql.unlink()
 
         vendor = fixture.path('web/static/vendors/options.min.js')
         vendor.parent.mkdir(parents=True)
@@ -525,6 +707,9 @@ def scanCases():
         payload = json.loads(out)
         check('scan excludes vendored minified code from rule signals',
               code == 0 and not any('vendors/' in item for item in payload['enumFiles']), out[:160])
+        check('scan selects API rules for an API/routes layer',
+              any(item['id'] == 'api' and item['status'] == 'met'
+                  and 'src/api' in item['evidence'] for item in payload['decisions']), out[:160])
         check('scan requires observable response code for response-key docs',
               any(item['id'] == 'response-keys' and item['status'] == 'met'
                   and 'src/api/response.py' in item['evidence']
@@ -572,6 +757,31 @@ def scanCases():
               not any('OLD_' in f for g in groups for f in g['files']), json.dumps(groups)[:160])
     finally:
         nested.cleanup()
+
+    # 룰 인덱스·결정 기록만 반복 수정해도 작업 플레이북 신호가 생기지 않아야 한다.
+    generatedOnly = Fixture()
+    try:
+        git = ['git', '-C', str(generatedOnly.root)]
+        for args in (['init', '-q'], ['config', 'user.email', 't@example.com'],
+                     ['config', 'user.name', 'test']):
+            subprocess.run(git + args, capture_output=True, timeout=60)
+        for round_ in range(4):
+            generatedOnly.append('AI_RULES.md', f'\nRule-only pass {round_}\n')
+            metadata = generatedOnly.path('.rule-architect/audit.json')
+            metadata.parent.mkdir(exist_ok=True)
+            metadata.write_text(json.dumps({'round': round_}), encoding='utf-8')
+            subprocess.run(git + ['add', '-A'], capture_output=True, timeout=60)
+            subprocess.run(git + ['commit', '-q', '-m', f'rule-{round_}'],
+                           capture_output=True, timeout=60)
+        code, out = run(SCAN, generatedOnly.root)
+        payload = json.loads(out)
+        check('rule-only commits never trigger recurring-task docs',
+              code == 0 and payload['coChange']['available']
+              and not payload['coChange']['groups']
+              and next(d for d in payload['decisions']
+                       if d['id'] == 'recurring-task')['status'] == 'not_met', out[:160])
+    finally:
+        generatedOnly.cleanup()
 
 
 # 스캔 결정 기록이 라우팅·노후화 검증까지 이어지는지 확인한다.
@@ -680,6 +890,160 @@ def decisionCases():
         code, out = run(VERIFY, fixture.root)
         check('verify rejects an incomplete decision record',
               code == 1 and 'decision manifest is incomplete' in out, out[:160])
+    finally:
+        fixture.cleanup()
+
+
+# Git HEAD가 없어도 스캔 뒤 작업 트리의 소스 변경을 감지한다.
+def dirtyDecisionCases():
+    fixture = Fixture()
+    try:
+        code, out = run(SCAN, fixture.root, '--max-files', '100', '--max-bytes', '80000',
+                        '--docs-dir', 'docs', '--exclude-dir', 'private',
+                        '--output', '.rule-architect/scan.json')
+        check('dirty-source test scan succeeds', code == 0, out[:160])
+        code, out = run(DECISIONS, 'init', fixture.root,
+                        '--scan', '.rule-architect/scan.json')
+        check('dirty-source test decision init succeeds', code == 0, out[:160])
+        path = fixture.path('.rule-architect/decisions.json')
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        for item in payload['decisions']:
+            if item['observed'] != 'not_met':
+                item['resolution'] = 'not_met'
+                item['reason'] = 'fixture isolates freshness from conditional docs'
+                item['selectedDoc'] = None
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('fingerprinted decisions pass before source changes', code == 0, out[:160])
+
+        fixture.append('docs/PITFALLS.md', '\nA generated rule changed.\n')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('generated rule edits do not stale source fingerprint', code == 0, out[:160])
+        restricted = fixture.path('private/route.py')
+        restricted.parent.mkdir()
+        restricted.write_text('@app.get("/api/private")\n', encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('excluded directory edits do not stale scan decisions', code == 0, out[:160])
+        restricted.unlink()
+        settings = fixture.path('.env.local')
+        settings.write_text('MODE=development\n', encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('uncommitted environment config makes decisions stale',
+              code == 1 and 'uncommitted source changed since scan' in out, out[:160])
+        settings.unlink()
+        source = fixture.path('src/db.py')
+        original = source.read_text(encoding='utf-8')
+        source.write_text(original + '\n# changed without a commit\n', encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('uncommitted source edit makes decisions stale',
+              code == 1 and 'uncommitted source changed since scan' in out, out[:160])
+        source.write_text(original[:-1] + ('X' if original[-1] != 'X' else 'Y'),
+                          encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('same-size uncommitted edits also stale decisions',
+              code == 1 and 'uncommitted source changed since scan' in out, out[:160])
+        source.write_text(original, encoding='utf-8')
+        added = fixture.path('src/added.py')
+        added.write_text('VALUE = 1\n', encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('untracked source addition makes decisions stale',
+              code == 1 and 'uncommitted source changed since scan' in out, out[:160])
+        added.unlink()
+        source.unlink()
+        code, out = run(DECISIONS, 'check', fixture.root)
+        check('source deletion makes decisions stale',
+              code == 1 and 'uncommitted source changed since scan' in out, out[:160])
+    finally:
+        fixture.cleanup()
+
+
+# 맞춤 생성 경로와 접근 금지 경로를 결정 기록까지 동일하게 재현한다.
+def customScopeCases():
+    fixture = Fixture()
+    try:
+        generated = fixture.path('docs_local/api/route.py')
+        generated.parent.mkdir(parents=True)
+        generated.write_text('def generated(): pass\n', encoding='utf-8')
+        code, out = run(SCAN, fixture.root, '--docs-dir', 'docs_local',
+                        '--exclude-dir', 'private', '--output', '.rule-architect/scan.json')
+        check('custom-scope scan succeeds', code == 0, out[:160])
+        code, out = run(DECISIONS, 'init', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs')
+        check('decision init rejects a mismatched docs directory',
+              code == 1 and 'must match the scan scope' in out, out[:160])
+        code, out = run(DECISIONS, 'init', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs_local')
+        check('custom-scope decision init succeeds', code == 0, out[:160])
+        path = fixture.path('.rule-architect/decisions.json')
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        for item in payload['decisions']:
+            if item['observed'] != 'not_met':
+                item['resolution'] = 'not_met'
+                item['reason'] = 'fixture tests scoped source freshness'
+                item['selectedDoc'] = None
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        generated.write_text('def generated(): return None\n', encoding='utf-8')
+        restricted = fixture.path('private/data.py')
+        restricted.parent.mkdir()
+        restricted.write_text('VALUE = 1\n', encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root,
+                        '--docs-dir', 'docs_local', legacy=False)
+        check('custom generated and excluded edits do not stale decisions', code == 0, out[:160])
+        code, out = run(DECISIONS, 'check', fixture.root, '--docs-dir', 'docs')
+        check('decision check rejects mismatched scan scope',
+              code == 1 and 'invalid source fingerprint, scan limits or scope' in out, out[:160])
+        fixture.path('.env').write_text('MODE=development\n', encoding='utf-8')
+        code, out = run(DECISIONS, 'check', fixture.root,
+                        '--docs-dir', 'docs_local', legacy=False)
+        check('custom-scope decisions still detect environment changes',
+              code == 1 and 'uncommitted source changed since scan' in out, out[:160])
+        code, out = run(MANIFEST, 'record', fixture.root, 'AI_RULES.md',
+                        '.rule-architect/decisions.json', legacy=False)
+        check('refresh fixture manifest recorded', code == 0, out[:160])
+        code, out = run(SCAN, fixture.root, '--docs-dir', 'docs_local',
+                        '--exclude-dir', 'private', '--output', '.rule-architect/scan.json')
+        check('refresh fixture rescan succeeds', code == 0, out[:160])
+        earlier = path.read_bytes()
+        code, out = run(DECISIONS, 'refresh', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs_local',
+                        legacy=False)
+        check('refresh preview preserves the old decision file',
+              code == 0 and path.read_bytes() == earlier and 'PREVIEW' in out, out[:160])
+        fixture.append('.env', 'CHANGED=1\n')
+        code, out = run(DECISIONS, 'refresh', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs_local',
+                        '--write', legacy=False)
+        check('refresh refuses a scan stale after its capture',
+              code == 1 and 'source changed since scan' in out
+              and path.read_bytes() == earlier, out[:160])
+        fixture.path('.env').write_text('MODE=development\n', encoding='utf-8')
+        scanPath = fixture.path('.rule-architect/scan.json')
+        scanPayload = json.loads(scanPath.read_text(encoding='utf-8'))
+        positive = next(item for item in scanPayload['decisions'] if item['status'] == 'met')
+        positive['status'] = 'not_met'
+        scanPath.write_text(json.dumps(scanPayload), encoding='utf-8')
+        code, out = run(DECISIONS, 'refresh', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs_local',
+                        '--write', legacy=False)
+        check('refresh requires explicit review of changed observed signals',
+              code == 1 and 'REVIEW:' in out and 'accept-observed-changes' in out
+              and path.read_bytes() == earlier, out[:160])
+        positive['status'] = 'met'
+        scanPath.write_text(json.dumps(scanPayload), encoding='utf-8')
+        code, out = run(DECISIONS, 'refresh', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs_local',
+                        '--write', legacy=False)
+        check('refresh writes reviewed decisions and their manifest hash',
+              code == 0 and 'RECORDED: 1 files' in out, out[:160])
+        code, out = run(DECISIONS, 'check', fixture.root,
+                        '--docs-dir', 'docs_local', legacy=False)
+        check('refreshed decisions pass source freshness', code == 0, out[:160])
+        fixture.append('AI_RULES.md', '\nManual rule edit.\n')
+        code, out = run(DECISIONS, 'refresh', fixture.root,
+                        '--scan', '.rule-architect/scan.json', '--docs-dir', 'docs_local',
+                        '--write', legacy=False)
+        check('refresh refuses a hand-modified generated file',
+              code == 1 and 'generated-file conflict' in out, out[:160])
     finally:
         fixture.cleanup()
 
@@ -929,12 +1293,134 @@ def harvestCases():
         mixed.cleanup()
 
 
+# v2 기본 경로와 v1 이동 시 충돌 차단을 별도로 확인한다.
+def v2Cases():
+    fixture = Fixture()
+    try:
+        code, out = run(VERIFY, fixture.root, legacy=False)
+        check('v2 default does not silently accept a v1 layout',
+              code == 1 and 'docs/ai-rules/ARCHITECTURE.md' in out, out[:160])
+        fixture.path('docs').rename(fixture.path('docs-old'))
+        fixture.path('docs').mkdir()
+        fixture.path('docs-old').rename(fixture.path('docs/ai-rules'))
+        index = fixture.path('AI_RULES.md')
+        index.write_text(index.read_text(encoding='utf-8').replace(
+            'docs/', 'docs/ai-rules/'), encoding='utf-8')
+        fixture.path('docs/PROJECT_GUIDE.md').write_text(
+            '# Project guide\n\nordinary docs\n', encoding='utf-8')
+        code, out = run(VERIFY, fixture.root, legacy=False)
+        check('v2 default verifies routed docs without collecting ordinary docs',
+              code == 0, out[:160])
+        code, out = run(QUIZ, 'scaffold', fixture.root, '--run-id', 'v2', legacy=False)
+        payload = json.loads(out)
+        check('v2 quiz sees only agent docs, not ordinary docs',
+              code == 0 and 'docs/PROJECT_GUIDE.md' not in payload['ruleFiles']
+              and 'docs/ai-rules/CODING_RULES.md' in payload['ruleFiles']
+              and 'docs/ai-rules/*.md' in payload['isolationPrompt'], out[:160])
+        code, out = run(MANIFEST, 'check', fixture.root, '--json', legacy=False)
+        payload = json.loads(out)
+        check('v2 manifest scopes untracked docs to the agent directory',
+              code == 2 and payload['untracked'] == sorted(
+                  f'docs/ai-rules/{name}' for name in
+                  ('ARCHITECTURE.md', 'CODING_RULES.md', 'PITFALLS.md')), out[:160])
+
+        scan = {'schema': 'rule-architect/scan@3', 'root': fixture.root.as_posix(),
+                'gitHead': None, 'decisions': [
+                    {'id': identifier, 'doc': doc, 'status': 'met' if identifier == 'api' else 'not_met',
+                     'condition': 'fixture signal', 'evidence': ['src/api/routes.py']}
+                    for identifier, doc in (
+                        ('controller', 'CONTROLLER_RULES.md'), ('api', 'API_RULES.md'),
+                        ('enum-codes', 'ENUM_CODES.md'), ('response-keys', 'RESPONSE_KEYS.md'),
+                        ('database', 'DB_RULES.md'), ('deploy', 'DEPLOY.md'),
+                        ('recurring-task', 'tasks/ADD_<TASK>.md'))]}
+        scanPath = fixture.path('scan.json')
+        incomplete = dict(scan)
+        incomplete['decisions'] = [item for item in scan['decisions'] if item['id'] != 'api']
+        scanPath.write_text(json.dumps(incomplete), encoding='utf-8')
+        code, out = run(DECISIONS, 'init', fixture.root, '--scan', scanPath, legacy=False)
+        check('v2 decision init rejects scan@3 without API decision',
+              code == 1 and 'api' in out, out[:160])
+        scanPath.write_text(json.dumps(scan), encoding='utf-8')
+        code, out = run(DECISIONS, 'init', fixture.root, '--scan', scanPath, legacy=False)
+        record = json.loads(fixture.path('.rule-architect/decisions.json').read_text(encoding='utf-8'))
+        check('v2 decision init selects API_RULES in new directory',
+              code == 0 and len(record['decisions']) == 7 and next(
+                  item['selectedDoc'] for item in record['decisions'] if item['id'] == 'api'
+              ) == 'docs/ai-rules/API_RULES.md', out[:160])
+        code, out = run(VERIFY, fixture.root, legacy=False)
+        check('v2 selected API doc must be routed',
+              code == 1 and 'selected doc is not linked' in out, out[:160])
+        fixture.path('docs/ai-rules/API_RULES.md').write_text('# API\n\nRoute contracts.\n', encoding='utf-8')
+        fixture.edit('AI_RULES.md',
+                     '| an error or surprising behavior appears | [docs/ai-rules/PITFALLS.md](docs/ai-rules/PITFALLS.md) |',
+                     '| an error or surprising behavior appears | [docs/ai-rules/PITFALLS.md](docs/ai-rules/PITFALLS.md) |\n'
+                     '| editing API routes | [docs/ai-rules/API_RULES.md](docs/ai-rules/API_RULES.md) |')
+        code, out = run(VERIFY, fixture.root, legacy=False)
+        check('v2 API routing passes the default verifier', code == 0, out[:160])
+        code, out = run(MANIFEST, 'record', fixture.root, 'AI_RULES.md', 'CLAUDE.md',
+                        'AGENTS.md', '.rule-architect/decisions.json',
+                        'docs/ai-rules/ARCHITECTURE.md', 'docs/ai-rules/CODING_RULES.md',
+                        'docs/ai-rules/PITFALLS.md', 'docs/ai-rules/API_RULES.md', '--replace')
+        codeCheck, outCheck = run(MANIFEST, 'check', fixture.root, legacy=False)
+        check('v2 complete manifest records only new rule paths',
+              code == 0 and codeCheck == 0, out + outCheck[:160])
+        code, out = run(VERIFY, fixture.root, legacy=False)
+        check('v2 manifest and decision record pass together', code == 0, out[:160])
+    finally:
+        fixture.cleanup()
+
+    legacy = Fixture()
+    try:
+        run(MANIFEST, 'record', legacy.root, 'AI_RULES.md', 'CLAUDE.md',
+            'AGENTS.md', 'docs/CODING_RULES.md')
+        legacy.append('docs/CODING_RULES.md', '\nmanual revision\n')
+        code, out = run(MANIFEST, 'check', legacy.root, legacy=False)
+        check('v2 update detects edits in tracked v1 docs even with new default',
+              code == 1 and 'docs/CODING_RULES.md' in out, out[:160])
+    finally:
+        legacy.cleanup()
+
+    migrated = Fixture()
+    try:
+        sources = ['ARCHITECTURE.md', 'CODING_RULES.md', 'PITFALLS.md']
+        tracked = ['AI_RULES.md', 'CLAUDE.md', 'AGENTS.md'] + [
+            f'docs/{name}' for name in sources]
+        migrated.path('docs/USER_GUIDE.md').write_text(
+            '# User guide\n\nkeep me\n', encoding='utf-8')
+        run(MANIFEST, 'record', migrated.root, *tracked)
+        code, out = run(MANIFEST, 'check', migrated.root)
+        check('legacy migration begins with a clean tracked set',
+              code == 0 and 'CLEAN' in out, out[:160])
+        migrated.path('docs/ai-rules').mkdir()
+        for name in sources:
+            migrated.path(f'docs/{name}').rename(migrated.path(f'docs/ai-rules/{name}'))
+        index = migrated.path('AI_RULES.md')
+        index.write_text(index.read_text(encoding='utf-8').replace(
+            'docs/', 'docs/ai-rules/'), encoding='utf-8')
+        code, out = run(MANIFEST, 'record', migrated.root,
+                        'AI_RULES.md', 'CLAUDE.md', 'AGENTS.md',
+                        *(f'docs/ai-rules/{name}' for name in sources), '--replace')
+        codeCheck, outCheck = run(MANIFEST, 'check', migrated.root, legacy=False)
+        data = json.loads(migrated.path('.rule-architect/manifest.json').read_text(encoding='utf-8'))
+        check('clean v1 rule docs migrate without touching ordinary docs or tracking old paths',
+              code == 0 and codeCheck == 0
+              and migrated.path('docs/USER_GUIDE.md').read_text(encoding='utf-8') ==
+              '# User guide\n\nkeep me\n'
+              and all(f'docs/{name}' not in data['files'] for name in sources),
+              out + outCheck[:160])
+    finally:
+        migrated.cleanup()
+
+
 def main():
     verifyCases()
+    v2Cases()
     manifestCases()
     quizCases()
     scanCases()
     decisionCases()
+    dirtyDecisionCases()
+    customScopeCases()
     hookgenCases()
     harvestCases()
     print()

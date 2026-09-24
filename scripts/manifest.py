@@ -3,7 +3,7 @@
 
 Usage:
   python3 manifest.py record <project-root> <file> [<file> ...]
-  python3 manifest.py check  <project-root> [--docs-dir docs] [--json]
+  python3 manifest.py check  <project-root> [--docs-dir docs/ai-rules] [--json]
 
 `record` stores a hash of every file the generator wrote, merging into whatever the
 manifest already holds; pass `--replace` to record a complete set and drop the rest.
@@ -112,7 +112,7 @@ def commandRecord(root, targets, replace=False):
 
 
 # Compare the working tree against the recorded hashes
-def commandCheck(root, asJson, docsDirname='docs'):
+def commandCheck(root, asJson, docsDirname='docs/ai-rules'):
     data = loadManifest(root)
     if data is None:
         report = {'status': 'legacy', 'clean': [], 'modified': [], 'missing': [],
@@ -156,7 +156,7 @@ def commandCheck(root, asJson, docsDirname='docs'):
 
 
 # Every UPPERCASE doc in the project, generated or not
-def uppercaseDocs(root, docsDirname='docs'):
+def uppercaseDocs(root, docsDirname='docs/ai-rules'):
     docsDir = root / docsDirname
     if not docsDir.is_dir():
         return []
@@ -186,7 +186,7 @@ def main():
     checkParser = sub.add_parser('check')
     checkParser.add_argument('root')
     checkParser.add_argument('--json', action='store_true')
-    checkParser.add_argument('--docs-dir', default='docs')
+    checkParser.add_argument('--docs-dir', default='docs/ai-rules')
 
     args = parser.parse_args()
     root = Path(args.root).resolve()

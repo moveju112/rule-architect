@@ -3,7 +3,7 @@
 ## Symptom: `RuntimeError: settings not loaded`
 
 Cause: settings were imported before the env loader ran.
-Fix: follow the env-ordering rule in [docs/CODING_RULES.md](docs/CODING_RULES.md).
+Fix: follow the env-ordering rule in [docs/CODING_RULES.md](CODING_RULES.md).
 
 ## Symptom: connection pool exhausted after an hour
 
