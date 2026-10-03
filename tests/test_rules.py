@@ -1201,6 +1201,57 @@ def harvestCases():
 
         code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent, '--days', '-1')
         check('harvest rejects invalid limits', code == 1 and 'non-negative' in out, out[:200])
+
+        rule = '- **[MUST]** load env before importing settings'
+        fixture.append('docs/PITFALLS.md', '\n' + rule + '\n'
+                       + '- **[NEVER]** load env before importing settings\n'
+                       + '```md\n' + rule + '\n```\n')
+        feedback = transcriptLine(str(root),
+                                  'docs/CODING_RULES.md:3 규칙을 또 복사하지 마',
+                                  '2026-08-08T00:00:00.000Z')
+        foreign = transcriptLine(str(root),
+                                 '/other/project/docs/ARCHITECTURE.md 읽지 마',
+                                 '2026-08-09T00:00:00.000Z')
+        with (transcripts / 'a.jsonl').open('a', encoding='utf-8') as handle:
+            handle.write(feedback + '\n' + foreign + '\n')
+        before = {name: fixture.path(name).read_bytes() for name in (
+            'AI_RULES.md', 'docs/CODING_RULES.md', 'docs/PITFALLS.md')}
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent,
+                        '--days', 0, '--review-rules', '--docs-dir', 'docs')
+        review = json.loads(out)['ruleReview']
+        check('rule review links actual corrections to exact current document paths',
+              code == 0 and len(review['correctionLinks']) == 1
+              and review['correctionLinks'][0]['ruleFiles'] == ['docs/CODING_RULES.md']
+              and review['correctionLinks'][0]['at'] == '2026-08-08T00:00:00.000Z', out[:200])
+        candidate = review['duplicateCandidates']
+        check('rule review flags cross-document duplicates without conflating severity or fences',
+              len(candidate) == 1 and len(candidate[0]) == 2
+              and {item['file'] for item in candidate[0]} == {
+                  'docs/CODING_RULES.md', 'docs/PITFALLS.md'}
+              and next(item['line'] for item in candidate[0]
+                       if item['file'] == 'docs/CODING_RULES.md') == 3, out[:200])
+        check('rule review is read-only and disclaims unobserved use',
+              all(fixture.path(name).read_bytes() == value for name, value in before.items())
+              and 'not measured reads' in review['note']
+              and 'permission to delete' in review['note'], out[:200])
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent, '--days', 0)
+        check('ordinary harvest keeps rule review opt-in',
+              code == 0 and 'ruleReview' not in json.loads(out), out[:200])
+
+        outside = Path(fixture.tmp) / 'outside.md'
+        outside.write_text(rule + '\n', encoding='utf-8')
+        fixture.path('docs/OUTSIDE.md').symlink_to(outside)
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent,
+                        '--days', 0, '--review-rules', '--docs-dir', 'docs')
+        review = json.loads(out)['ruleReview']
+        check('rule review skips documents linked outside the project boundary',
+              code == 0 and review['skippedFiles'] == ['docs/OUTSIDE.md']
+              and all(item['file'] != 'docs/OUTSIDE.md'
+                      for group in review['duplicateCandidates'] for item in group), out[:200])
+        code, out = run(HARVEST, root, '--transcript-dir', transcripts.parent,
+                        '--review-rules', '--docs-dir', '../outside')
+        check('rule review rejects a configured directory outside the project',
+              code == 1 and 'must stay inside the project' in out, out[:200])
     finally:
         fixture.cleanup()
 

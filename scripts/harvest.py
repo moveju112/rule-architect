@@ -4,6 +4,7 @@
 Usage: python3 harvest.py <project-root> [--source auto|claude|codex|all]
                           [--claude-dir DIR] [--codex-dir DIR]
                           [--days N] [--limit N] [--max-files N]
+                          [--review-rules] [--index NAME] [--docs-dir DIR]
 
 `scan.py` answers "what is in this project". This answers "what did the agent
 actually get wrong here" — the user's own corrections, quoted from past session
@@ -26,6 +27,8 @@ import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from quiz import discoverRuleFiles
 
 DEFAULT_CLAUDE_TRANSCRIPT_ROOT = Path.home() / '.claude' / 'projects'
 DEFAULT_CODEX_TRANSCRIPT_ROOT = Path.home() / '.codex' / 'sessions'
@@ -404,6 +407,58 @@ def deduplicate(corrections):
     return unique
 
 
+# 실제 교정의 문서 언급을 연결하고 같은 규칙 문장의 위치만 진단한다.
+def reviewRules(root, corrections, indexName, docsDirname):
+    files = sorted(discoverRuleFiles(root, indexName, docsDirname))
+    links, mentioned = [], set()
+    for item in corrections:
+        references = [name for name in files if (
+            pathMentioned(item['text'], (root / name).as_posix())
+            or re.search(r'(?<![\w/\\.-])' + re.escape(name)
+                         + r'(?=$|[\s`\'":,\]\[()<>{};|&])', item['text']))]
+        if references:
+            mentioned.update(references)
+            links.append({key: item[key] for key in ('source', 'sessionId', 'at')} | {
+                'ruleFiles': references,
+                'correction': item['text'],
+            })
+
+    locations, skipped = {}, []
+    for name in files[:100]:
+        path = root / name
+        try:
+            if not pathWithin(path, root) or path.stat().st_size > 65536:
+                skipped.append(name)
+                continue
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeError):
+            skipped.append(name)
+            continue
+        # 규범 문장만 비교한다. MUST/NEVER와 조건은 지우지 않는다.
+        inFence = False
+        for number, line in enumerate(lines, 1):
+            if line.lstrip().startswith(('```', '~~~')):
+                inFence = not inFence
+                continue
+            if inFence or not re.match(r'^\s*- \*\*\[(?:MUST|NEVER|SHOULD)\]\*\* ', line):
+                continue
+            normalized = ' '.join(line.strip().split())
+            locations.setdefault(normalized, []).append({'file': name, 'line': number})
+    candidates = [items for items in locations.values()
+                  if len({item['file'] for item in items}) > 1
+                  and any(item['file'] in mentioned for item in items)]
+    return {
+        'correctionLinks': links,
+        'duplicateCandidates': candidates[:30],
+        'truncated': len(files) > 100 or len(candidates) > 30,
+        'skippedFiles': skipped,
+        'note': ('Document mentions are correction evidence, not measured reads. '
+                 'Duplicate sentences are review candidates, not equivalent rule blocks. '
+                 'Check scope, conditions, rationale and examples before consolidating. '
+                 'No mention or candidate is evidence of non-use or permission to delete.'),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Harvest user corrections from past session transcripts.')
@@ -419,11 +474,19 @@ def main():
                         help='ignore corrections older than this (0 = no limit)')
     parser.add_argument('--limit', type=int, default=DEFAULT_LIMIT)
     parser.add_argument('--max-files', type=int, default=DEFAULT_MAX_FILES)
+    parser.add_argument('--review-rules', action='store_true',
+                        help='link corrections to current rule docs and flag exact duplicate candidates')
+    parser.add_argument('--index', default='AI_RULES.md')
+    parser.add_argument('--docs-dir', default='docs/ai-rules')
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
     if not root.is_dir():
         print(f'FAIL: {root} is not a directory', file=sys.stderr)
+        return 1
+    if args.review_rules and not all(pathWithin(root / name, root)
+                                     for name in (args.index, args.docs_dir)):
+        print('FAIL: --index and --docs-dir must stay inside the project', file=sys.stderr)
         return 1
     if args.days < 0 or args.limit < 0 or args.max_files < 1:
         print('FAIL: --days/--limit must be non-negative and --max-files must be positive',
@@ -495,6 +558,8 @@ def main():
                       'is recent, belongs to this project, and does not conflict with the '
                       'current source. Verify against the code before writing it down.'),
     }
+    if args.review_rules:
+        report['ruleReview'] = reviewRules(root, limited, args.index, args.docs_dir)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

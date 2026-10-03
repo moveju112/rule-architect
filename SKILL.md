@@ -230,6 +230,25 @@ rule, and lands in the doc its scope belongs to. No `harvest.py` output goes int
 the correction is the lead, the code is the evidence. If nothing clears the bar, say so in the report;
 an empty harvest is a normal outcome for a young project.
 
+### Feedback-driven simplification
+
+When updating rules to reduce duplication or unnecessary reading, run the existing harvester with
+`--review-rules` (pass `--index` / `--docs-dir` for custom layouts). `ruleReview` connects actual
+corrections to the current rule files they explicitly mention and lists exact repeated MUST/NEVER/SHOULD
+sentences as `file:line` candidates. It is read-only and opt-in; normal harvesting stays unchanged.
+
+- Use the linked correction as a lead, then inspect both rule blocks and the current source.
+  Repeated sentences can have different scopes, conditions, rationale or examples; never merge on text alone.
+- For excessive document loading, inspect the actual task's read/tool evidence and Routing row.
+  A correction's document mention is not a measured read. Missing mentions, capped history and zero
+  candidates cannot prove non-use; keep a rule when the evidence does not support changing it.
+- Give one applicable doc ownership of a shared constraint and cross-link it from other relevant docs.
+  Narrow a Routing trigger only when a concrete task shows the broader trigger read irrelevant docs.
+  Preserve exceptions, required reads and every acceptance check; do not delete rules automatically.
+- Report correction/session evidence, changed `file:line`, before/after rule lines and the task's
+  needed documents. Claim read/token savings only when measured. Reuse manifest, structural and quiz
+  gates; do not add another review loop or regenerate unaffected files.
+
 ## Verify
 
 1. **Script** — `python3 scripts/verify_rules.py <project-root>`. When the project uses a different

@@ -260,6 +260,13 @@ the harvest lands in a rule file verbatim.
 python3 scripts/harvest.py <root> --days 180 --limit 60
 ```
 
+For feedback-driven simplification, add `--review-rules` (`--docs-dir` / `--index` for custom layouts).
+The read-only `ruleReview` links real corrections to explicitly named rule docs and gives `file:line`
+locations of repeated normative sentences. These are candidates: compare complete scopes and exceptions
+before sharing one rule through cross-links. A document mention is not a measured read, and absence is
+not permission to delete. Narrow broad Routing triggers only with actual task read evidence, then reuse
+the existing manifest, structural and quiz gates. Normal harvesting does not scan rule contents.
+
 ## Hook promotion (Claude Code only)
 
 Rules a machine can enforce — forbidden calls, forbidden imports, banned paths — are
